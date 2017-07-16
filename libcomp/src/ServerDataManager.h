@@ -33,6 +33,7 @@
 // libcomp Includes
 #include "CString.h"
 #include "DataStore.h"
+#include "Log.h"
 
 // tinyxml2 Includes
 #include "PushIgnore.h"
@@ -44,11 +45,23 @@
 
 namespace objects
 {
+class Event;
+class ServerShop;
 class ServerZone;
 }
 
 namespace libcomp
 {
+
+/**
+ * Container for AI script information.
+ */
+struct ServerAIScript
+{
+    String Name;
+    String Path;
+    String Source;
+};
 
 /**
  * Manager class responsible for loading server specific files such as
@@ -75,6 +88,27 @@ public:
     const std::shared_ptr<objects::ServerZone> GetZoneData(uint32_t id);
 
     /**
+     * Get an event by definition ID
+     * @param id Definition ID of an event to load
+     * @return Pointer to the event matching the specified id
+     */
+    const std::shared_ptr<objects::Event> GetEventData(const libcomp::String& id);
+
+    /**
+     * Get a shop by definition ID
+     * @param id Definition ID of a shop to load
+     * @return Pointer to the shop matching the specified id
+     */
+    const std::shared_ptr<objects::ServerShop> GetShopData(uint32_t id);
+
+    /**
+     * Get an AI script by name
+     * @param name Name of the script to load
+     * @return Pointer to the script definition
+     */
+    const std::shared_ptr<ServerAIScript> GetAIScript(const libcomp::String& name);
+
+    /**
      * Load all server data defintions in the data store
      * @param pDataStore Pointer to the datastore to load binary files from
      * @return true on success, false on failure
@@ -84,14 +118,14 @@ public:
 private:
     /**
      * Get a server object by ID from the supplied map of the specified
-     * type
+     * key and value type
      * @param id ID of the server object to retrieve from the map
      * @param data Map of server objects to retrieve by ID
      * @return Pointer to the matching server object, null if doesn't exist
      */
-    template <class T>
-    std::shared_ptr<T> GetObjectByID(uint32_t id,
-        std::unordered_map<uint32_t, std::shared_ptr<T>>& data)
+    template <class K, class T>
+    std::shared_ptr<T> GetObjectByID(K id,
+        std::unordered_map<K, std::shared_ptr<T>>& data)
     {
         auto iter = data.find(id);
         if(iter != data.end())
@@ -103,37 +137,102 @@ private:
     }
 
     /**
-     * Load all objects in an XML document into the specified type
-     * @param doc Loaded XML document
-     * @param data Output map to store the loaded objects in by ID
+     * Load all objects from files in a datastore path
+     * @param pDataStore Pointer to the datastore to use
+     * @param datastorePath Path within the data store to load files from
      * @return true on success, false on failure
      */
     template <class T>
-    bool LoadObjects(const tinyxml2::XMLDocument& doc,
-        std::unordered_map<uint32_t, std::shared_ptr<T>>& data)
+    bool LoadObjects(gsl::not_null<DataStore*> pDataStore,
+        const libcomp::String& datastorePath)
     {
-        const tinyxml2::XMLElement *rootNode = doc.RootElement();
-        const tinyxml2::XMLElement *objNode = rootNode->FirstChildElement("object");
+        std::list<libcomp::String> files;
+        std::list<libcomp::String> dirs;
+        std::list<libcomp::String> symLinks;
 
-        while(nullptr != objNode)
+        (void)pDataStore->GetListing(datastorePath, files, dirs, symLinks,
+            true, true);
+
+        for(auto path : files)
         {
-            std::shared_ptr<T> obj = std::shared_ptr<T>(new T);
-            if(!obj->Load(doc, *objNode))
+            if(path.Matches("^.*\\.xml$"))
             {
-                return false;
+                tinyxml2::XMLDocument objsDoc;
+
+                std::vector<char> data = pDataStore->ReadFile(path);
+
+                if(data.empty() || tinyxml2::XML_SUCCESS !=
+                    objsDoc.Parse(&data[0], data.size()))
+                {
+                    return false;
+                }
+                
+                const tinyxml2::XMLElement *rootNode = objsDoc.RootElement();
+                const tinyxml2::XMLElement *objNode = rootNode->FirstChildElement("object");
+
+                while(nullptr != objNode)
+                {
+                    if(!LoadObject<T>(objsDoc, objNode))
+                    {
+                        LOG_ERROR(libcomp::String("Failed to load XML file: %1\n").Arg(path));
+                        return false;
+                    }
+
+                    objNode = objNode->NextSiblingElement("object");
+                }
+
+                LOG_DEBUG(libcomp::String("Loaded XML file: %1\n").Arg(path));
             }
-
-            data[obj->GetID()] = obj;
-
-            objNode = objNode->NextSiblingElement("object");
         }
+
 
         return true;
     }
 
+    /**
+     * Load an object of the templated type from an XML node
+     * @param doc XML document being loaded from
+     * @param objNode XML node being loaded from
+     * @return true on success, false on failure
+     */
+    template <class T>
+    bool LoadObject(const tinyxml2::XMLDocument& doc, const tinyxml2::XMLElement *objNode);
+    
+
+    /**
+     * Load all script files in the specified datastore
+     * @param pDataStore Pointer to the datastore to use
+     * @param datastorePath Path within the data store to load scripts from
+     * @param handler Function pointer to call upon successful load
+     * @return true on success, false on failure
+     */
+    bool LoadScripts(gsl::not_null<DataStore*> pDataStore,
+        const libcomp::String& datastorePath,
+        std::function<bool(ServerDataManager&,
+            const libcomp::String&, const libcomp::String&)> handler);
+
+    /**
+     * Verify and store a successfully loaded AI script
+     * @param path Path to the AI script file
+     * @param source Source contained within the AI script file
+     * @return true on success, false on failure
+     */
+    bool LoadAIScript(const libcomp::String& path, const libcomp::String& source);
+
     /// Map of server zone defintions by zone definition ID
     std::unordered_map<uint32_t,
         std::shared_ptr<objects::ServerZone>> mZoneData;
+    
+    /// Map of events by definition ID
+    std::unordered_map<std::string,
+        std::shared_ptr<objects::Event>> mEventData;
+
+    /// Map of shops by definition ID
+    std::unordered_map<uint32_t,
+        std::shared_ptr<objects::ServerShop>> mShopData;
+
+    /// Map of AI scripts by name
+    std::unordered_map<std::string, std::shared_ptr<ServerAIScript>> mAIScripts;
 };
 
 } // namspace libcomp

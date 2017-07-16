@@ -43,6 +43,7 @@
 #include "CharacterManager.h"
 #include "ChatManager.h"
 #include "DefinitionManager.h"
+#include "EventManager.h"
 #include "ServerDataManager.h"
 #include "SkillManager.h"
 #include "ZoneManager.h"
@@ -64,10 +65,10 @@ public:
      * @param szProgram First command line argument for the application.
      * @param config Pointer to a casted ChannelConfig that will contain properties
      *   every server has in addition to channel specific ones.
-     * @param configPath File path to the location of the config to be loaded.
      */
-    ChannelServer(const char *szProgram, std::shared_ptr<
-        objects::ServerConfig> config, const libcomp::String& configPath);
+    ChannelServer(const char *szProgram,
+        std::shared_ptr<objects::ServerConfig> config,
+        std::shared_ptr<libcomp::ServerCommandLineParser> commandLine);
 
     /**
      * Clean up the server.
@@ -91,10 +92,34 @@ public:
     static ServerTime GetServerTime();
 
     /**
+     * Get the amount of time left in an expiration relative to the server,
+     * in seconds.
+     * @return Time until expiration relative to the server, in seconds
+     */
+    static int32_t GetExpirationInSeconds(uint32_t fixedTime,
+        uint32_t relativeTo = 0);
+
+    /**
+     * Get the world clock time of the server.
+     * @param phase Output param, world clock phase of the server
+     * @param hour Output param, world clock hours of the server
+     * @param min Output param, world clock minutes of the server
+     */
+    void GetWorldClockTime(int8_t& phase, int8_t& hour, int8_t& min);
+
+    /**
      * Get the RegisteredChannel.
      * @return Pointer to the RegisteredChannel
      */
     const std::shared_ptr<objects::RegisteredChannel> GetRegisteredChannel();
+
+    /**
+     * Get all channels registerd on the channel's world (including
+     * itself).
+     * @return List of pointers to all of the world's registered channels
+     */
+    const std::list<std::shared_ptr<objects::RegisteredChannel>>
+        GetAllRegisteredChannels();
 
     /**
      * Get the RegisteredWorld.
@@ -108,6 +133,13 @@ public:
      */
     void RegisterWorld(const std::shared_ptr<
         objects::RegisteredWorld>& registeredWorld);
+
+    /**
+     * Load all of the channel's connected world's RegisteredChannel
+     * entries in the database.  This allows other channels to be seen
+     * by the current channel for listing existing channels to the client.
+     */
+    void LoadAllRegisteredChannels();
 
     /**
      * Get the world database.
@@ -171,6 +203,12 @@ public:
     ChatManager* GetChatManager() const;
 
     /**
+     * Get a pointer to the event manager.
+     * @return Pointer to the EventManager
+     */
+    EventManager* GetEventManager() const;
+
+    /**
      * Get a pointer to the skill manager.
      * @return Pointer to the SkillManager
      */
@@ -206,6 +244,34 @@ public:
      */
     int64_t GetNextObjectID();
 
+    /**
+     * Simulate a server tick, handling events like updating
+     * the server time and zone states as well as ansynchronously
+     * saving data.
+     */
+    void Tick();
+
+    /**
+     * Schedule code work to be queued by the next server tick that occurs
+     * following the specified time.
+     * @param timestamp ServerTime timestamp that needs to pass for the
+     *  specified work to be processed
+     * @param f Function (lambda) to execute
+     * @param args Arguments to pass to the function when it is executed
+     * @return true on success, false on failure
+     */
+    template<typename Function, typename... Args>
+    bool ScheduleWork(ServerTime timestamp, Function&& f, Args&&... args)
+    {
+        auto msg = new libcomp::Message::ExecuteImpl<Args...>(
+            std::forward<Function>(f), std::forward<Args>(args)...);
+
+        std::lock_guard<std::mutex> lock(mLock);
+        mScheduledWork[timestamp].push_back(msg);
+
+        return true;
+    }
+
 protected:
     /**
      * Create a connection to a newly active socket.
@@ -229,9 +295,20 @@ protected:
      */
     static ServerTime GetServerTimeHighResolution();
 
+    /**
+     * Queues up a time based event to insert a system message
+     * that triggers a server tick.
+     */
+    void QueueNextTick();
+
     /// Function pointer to the most accurate time detection code
     /// available for the current machine.
     static GET_SERVER_TIME sGetServerTime;
+
+    /// Timestamp ordered map of prepared Execute messages and timestamps
+    /// associated to when they should be queued following a server tick
+    std::map<ServerTime,
+        std::list<libcomp::Message::Execute*>> mScheduledWork;
 
     /// Pointer to the manager in charge of connection messages.
     std::shared_ptr<ManagerConnection> mManagerConnection;
@@ -245,8 +322,11 @@ protected:
     /// A shared pointer to the main database used by the server.
     std::shared_ptr<libcomp::Database> mLobbyDatabase;
 
-    /// Pointer to the RegisteredChannel.
+    /// Pointer to the RegisteredChannel for this server.
     std::shared_ptr<objects::RegisteredChannel> mRegisteredChannel;
+
+    /// List of pointers to all RegisteredChannels for the world.
+    std::list<std::shared_ptr<objects::RegisteredChannel>> mAllRegisteredChannels;
 
     /// Pointer to the account manager.
     AccountManager *mAccountManager;
@@ -259,6 +339,9 @@ protected:
 
     /// Pointer to the Chat Manager.
     ChatManager *mChatManager;
+
+    /// Pointer to the Event Manager.
+    EventManager *mEventManager;
 
     /// Pointer to the Skill Manager.
     SkillManager *mSkillManager;
@@ -277,6 +360,9 @@ protected:
 
     /// Highest unique object ID currently assigned
     int64_t mMaxObjectID;
+
+    /// Thread that queues up tick messages after a delay.
+    std::thread mTickThread;
 
     /// Server lock for shared resources
     std::mutex mLock;

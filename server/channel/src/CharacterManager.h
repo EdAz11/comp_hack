@@ -27,6 +27,12 @@
 #ifndef SERVER_CHANNEL_SRC_CHARACTERMANAGER_H
 #define SERVER_CHANNEL_SRC_CHARACTERMANAGER_H
 
+// libcomp Includes
+#include <EnumMap.h>
+
+// object Includes
+#include <MiCorrectTbl.h>
+
 // channel Includes
 #include "ChannelClientConnection.h"
 
@@ -45,6 +51,8 @@ class ItemBox;
 class MiDevilData;
 class MiDevilLVUpData;
 }
+
+typedef objects::MiCorrectTbl::ID_t CorrectTbl;
 
 namespace channel
 {
@@ -104,71 +112,171 @@ public:
         ClientState *otherState);
 
     /**
-     * Send updated data about a demon in the COMP to the game client.
+     * Send updated data about a demon in a box to the game client.
      * @param client Pointer to the client connection
-     * @param box Demon container ID, should always be zero
+     * @param boxID Demon box ID
      * @param slot Slot of the demon to send data for
-     * @param id ID of the demon to send data for
+     * @param demonID ID of the demon to send data for
      */
-    void SendCOMPDemonData(const std::shared_ptr<
+    void SendDemonData(const std::shared_ptr<
         ChannelClientConnection>& client,
-        int8_t box, int8_t slot, int64_t id);
+        int8_t boxID, int8_t slot, int64_t demonID);
 
     /**
-     * Send a character's status icon to the game clients.
+     * Recalculate the stats of an entity belonging to the supplied
+     * client and send any resulting changes to the zone (and world
+     * if applicable).
+     * @param client Pointer to the client connection
+     * @param entityID ID of the entity associated to the client to
+     *  recalculate the stats of
+     * @param updateSourceClient true if the changes should be sent
+     *  to the client itself as well, false if the client will be
+     *  communicated about the changes later
+     * @return 1 if the calculation resulted in a change to the stats
+     *  that should be sent to the client, 2 if one of the changes should
+     *  be communicated to the world (for party members etc), 0 otherwise
+     */
+    uint8_t RecalculateStats(std::shared_ptr<
+        ChannelClientConnection> client, int32_t entityID,
+        bool updateSourceClient = true);
+
+    /**
+     * Send the stats of an entity that has been recalculated to the
+     * zone (and world if applicable).
+     * @param client Pointer to the client connection
+     * @param entityID ID of the entity associated to the client to
+     *  recalculate the stats of
+     * @param includeSelf true if the packet should be sent to the
+     *  source client as well
+     */
+    void SendEntityStats(std::shared_ptr<
+        ChannelClientConnection> client, int32_t entityID,
+        bool includeSelf = true);
+
+    /**
+     * Send a revival action notification about the specified client to
+     * one client or the whole zone they are connected to.
+     * @param client Pointer to the client connection
+     * @param entity Entity that has had a revival action performed
+     *  on them
+     * @param action Revival action that has taken place. The valid
+     *  values are:
+     *  -1) Revival done: Signifies that no other revival action will
+     *      be sent following this one
+     *   1) Revive and wait: Revive the player character and wait for
+     *      a "revival done" notification. This is typically followed
+     *      with a zone change.
+     *   3) Normal: The entity has been revived by a skill or item
+     *   4) Accept revival: The entity is a character and is accepting
+     *      revival from other players
+     *   5) Deny revival: The entity is a character and is not accepting
+     *      revival from other players
+     * @param sendToZone true if the entire zone should be sent the
+     *  notification, false if just the client should be sent it
+     */
+    void SendEntityRevival(std::shared_ptr<
+        ChannelClientConnection> client,
+        const std::shared_ptr<ActiveEntityState>& eState,
+        int8_t action, bool sendToZone = false);
+
+    /**
+     * Set the character's status icon and send to the game clients
+     * if it has changed.
      * @param client Pointer to the client connection containing
      *  the character
+     * @param icon Value of the new status icon to set
      */
-    void SendStatusIcon(const std::shared_ptr<
-        channel::ChannelClientConnection>& client);
+    void SetStatusIcon(const std::shared_ptr<
+        channel::ChannelClientConnection>& client, int8_t icon = 0);
 
     /**
      * Summon the demon matching the supplied ID on the client's character.
      * @param client Pointer to the client connection containing
      *  the character
      * @param demonID ID of the demon to summon
+     * @param updatePartyState true if the world should be updated
+     *  with the character's new party state, false if it will be updated
+     *  later
      */
     void SummonDemon(const std::shared_ptr<
-        channel::ChannelClientConnection>& client, int64_t demonID);
+        channel::ChannelClientConnection>& client, int64_t demonID,
+        bool updatePartyState = true);
 
     /**
      * Return the current demon of the client's character to the COMP.
      * @param client Pointer to the client connection containing
      *  the character
+     * @param updatePartyState true if the world should be updated
+     *  with the character's new party state, false if it will be updated
+     *  later
      */
     void StoreDemon(const std::shared_ptr<
-        channel::ChannelClientConnection>& client);
+        channel::ChannelClientConnection>& client,
+        bool updatePartyState = true);
 
     /**
-     * Send information about the specified box to the client.
+     * Send information about the specified demon box to the client.
      * @param client Pointer to the client connection containing
      *  the box
-     * @param boxID Box index ID
+     * @param boxID Demon box ID
+     */
+    void SendDemonBoxData(const std::shared_ptr<
+        ChannelClientConnection>& client, int8_t boxID);
+
+    /**
+     * Get the client's character or account owned demon box by ID.
+     * @param client Pointer to the client connection containing
+     *  the box
+     * @param boxID Demon box ID to retrieve. 0 represents the COMP
+     *  and anything higher is a depo box
+     * @return Pointer to the demon box with the specified ID
+     */
+    std::shared_ptr<objects::DemonBox> GetDemonBox(ClientState* state,
+        int8_t boxID);
+
+    /**
+     * Get the client's character or account owned item box by ID.
+     * @param client Pointer to the client connection containing
+     *  the box
+     * @param boxType Type of item box to retrieve
+     * @param boxID Item box ID to retrieve by index
+     * @return Pointer to the item box with the specified type and ID
+     */
+    std::shared_ptr<objects::ItemBox> GetItemBox(ClientState* state,
+        int8_t boxType, int64_t boxID);
+
+    /**
+     * Send information about the specified item box to the client.
+     * @param client Pointer to the client connection containing
+     *  the box
+     * @param box Box to send information regarding
      */
     void SendItemBoxData(const std::shared_ptr<
-        ChannelClientConnection>& client, int64_t boxID);
+        ChannelClientConnection>& client,
+        const std::shared_ptr<objects::ItemBox>& box);
 
     /**
      * Send information about the specified box slots to the client.
      * @param client Pointer to the client connection containing
      *  the box
-     * @param boxID Box index ID
+     * @param box Box to send information regarding
      * @param slots List of slots to send information about
      */
     void SendItemBoxData(const std::shared_ptr<
-        ChannelClientConnection>& client, int64_t boxID,
-        const std::list<uint16_t>& slots);
+        ChannelClientConnection>& client, const std::shared_ptr<
+        objects::ItemBox>& box, const std::list<uint16_t>& slots);
 
     /**
-     * Get all items in a character's inventory that match the supplied
+     * Get all items in the specified box that match the supplied
      * itemID.
      * @param character Pointer to the character
      * @param itemID Item ID to find in the inventory
+     * @param box Box to return items for
      * @return List of pointers to the items of the matching ID
      */
     std::list<std::shared_ptr<objects::Item>> GetExistingItems(
         const std::shared_ptr<objects::Character>& character,
-        uint32_t itemID);
+        uint32_t itemID, std::shared_ptr<objects::ItemBox> box = nullptr);
 
     /**
      * Generate an item with the specified stack size.  The stack size
@@ -196,7 +304,8 @@ public:
         uint16_t quantity, bool add, int64_t skillTargetID = 0);
 
     /**
-     * Equip an item matching the supplied ID on the client's character.
+     * Equip or unequip an item matching the supplied ID on the
+     * client's character.
      * @param client Pointer to the client connection containing
      *  the character
      * @param itemID Object ID matching an item in the character's item
@@ -204,6 +313,33 @@ public:
      */
     void EquipItem(const std::shared_ptr<
         channel::ChannelClientConnection>& client, int64_t itemID);
+
+    /**
+     * Unequip the supplied item from the client's character.  Unlike
+     * EquipItem, the item will not be toggled if it isn't equipped.
+     * @param client Pointer to the client connection containing
+     *  the character
+     * @param item Pointer to the item to unequip
+     * @return true if the item was unequipped, false if it was not
+     *  equipped to begin with
+     */
+    bool UnequipItem(const std::shared_ptr<
+        channel::ChannelClientConnection>& client,
+        const std::shared_ptr<objects::Item>& item);
+
+    /**
+     * End the current trade session for the client with various outcome
+     * types. The trade logic is handled elsewhere and the other
+     * participant in the trade must be notified via this function as well.
+     * @param client Client to notify of the end of a trade
+     * @param outcome Defaults to cancelled
+     *  0 = trade success
+     *  2 = player can't hold more items
+     *  3 = other player can't hold more items
+     *  anything else = trade cancelled
+     */
+    void EndTrade(const std::shared_ptr<
+        channel::ChannelClientConnection>& client, int32_t outcome = 1);
 
     /**
      * Update the client's character's LNC value.
@@ -258,6 +394,70 @@ public:
         channel::ChannelClientConnection>& client, uint32_t skillID);
 
     /**
+     * Update the specified entity to learn a skill by ID.
+     * @param client Pointer to the client connection
+     * @param entityID ID of the entity to learn the skill
+     * @param skillID Skill ID to update the entity to learn
+     * @return true if the skill was learned or is already learned,
+     *  false if it failed
+     */
+    bool LearnSkill(const std::shared_ptr<
+        channel::ChannelClientConnection>& client, int32_t entityID,
+        uint32_t skillID);
+
+    /**
+     * Add a map to the byte array representing the maps the client character
+     * has obtained.
+     * @param client Pointer to the client connection
+     * @param mapIndex Array offset to apply the map value to
+     * @param mapValue Value to apply to the map array at the specified
+     *  offset. Can represent multiple maps at the same offset
+     * @return true if the map is valid and was either added or already
+     *  obtained, false it was not
+     */
+    bool UpdateMapFlags(const std::shared_ptr<
+        channel::ChannelClientConnection>& client, size_t mapIndex,
+        uint8_t mapValue);
+
+    /**
+     * Send the client character's obtained maps stored as an array of flags
+     * @param client Pointer to the client connection
+     */
+    void SendMapFlags(const std::shared_ptr<
+        ChannelClientConnection>& client);
+
+    /**
+     * Update the status effects assigned directly on a character or demon
+     * entity from the current status effect states and save them to the
+     * database.
+     * @param eState Pointer to the entity to save the status effects for
+     * @param queueSave true if the save action should be queued, false
+     *  if it should be done synchronously
+     */
+    bool UpdateStatusEffects(const std::shared_ptr<
+        ActiveEntityState>& eState, bool queueSave = false);
+
+    /**
+     * Cancel status effects associated to a client's character and demon
+     * based upon an action that affects both entities.
+     * @param client Pointer to the client connection
+     * @param cancelFlags Flags indicating conditions that can cause status
+     *  effects to be cancelled. The set of valid status conditions are listed
+     *  as constants on ActiveEntityState
+     */
+    void CancelStatusEffects(const std::shared_ptr<
+        ChannelClientConnection>& client, uint8_t cancelFlags);
+
+    /**
+     * Update the state of the supplied entities on the world server.
+     * @param entities List of pointers to entities to update on the world
+     *  server. If the supplied entities are not associated to any others
+     *  at a world server level, nothing will be sent.
+     */
+    void UpdateWorldDisplayState(const std::set<
+        std::shared_ptr<ActiveEntityState>> &entities);
+
+    /**
      * Calculate the base stats of a character.
      * @param cs Pointer to the core stats of a character
      */
@@ -277,7 +477,7 @@ public:
      * @param cs Pointer to the core stats of a character
      * @return Map of correct table indexes to corresponding stat values
      */
-    static std::unordered_map<uint8_t, int16_t> GetCharacterBaseStatMap(
+    static libcomp::EnumMap<CorrectTbl, int16_t> GetCharacterBaseStatMap(
         const std::shared_ptr<objects::EntityStats>& cs);
 
     /**
@@ -287,17 +487,26 @@ public:
      * @param level Current level of the character or demon
      * @param isDemon true if the entity is a demon, false if it is character
      */
-    static void CalculateDependentStats(std::unordered_map<uint8_t, int16_t>& stats,
+    static void CalculateDependentStats(libcomp::EnumMap<CorrectTbl, int16_t>& stats,
         int8_t level, bool isDemon);
 
     /**
-     * Add COMP slot data to a packet.
-     * @param p Packet to populate with COMP data
-     * @param client Current client to retrieve COMP information from
-     * @param slot COMP slot index to populate information from
+     * Correct a map of calculated stat values to not exceed the maximum or
+     * minimum values possible.
+     * @param stats Reference to a correct table map
      */
-    void GetCOMPSlotPacketData(libcomp::Packet& p, 
-        const std::shared_ptr<channel::ChannelClientConnection>& client, size_t slot);
+    static void AdjustStatBounds(libcomp::EnumMap<CorrectTbl, int16_t>& stats);
+
+    /**
+     * Add data to a packet about a demon in a box.
+     * @param p Packet to populate with demon data
+     * @param client Current client to retrieve demon information from
+     * @param box Demon box to populate information from
+     * @param slot Demon box slot index to populate information from
+     */
+    void GetDemonPacketData(libcomp::Packet& p, 
+        const std::shared_ptr<channel::ChannelClientConnection>& client,
+        const std::shared_ptr<objects::DemonBox>& box, int8_t slot);
 
     /**
      * Add the core stat data from the supplied EntityStats instance
@@ -308,14 +517,18 @@ public:
      * @param state Pointer to the current state of the entity in a
      *  zone.  If this parameter is supplied as null, only the core
      *  stats will be populated.
-     * @param boostFormat true if the format should match the one used when
-     *  stat changes are reported to the client, false if the format should
-     *  match the one used for full entity descriptions
+     * @param format Format to write the data in from the followin options:
+     *  0) Standard format used when intially describing a new entity
+     *  1) "Boost" format used when describing an entity that
+     *     has leveled up or had its non-calculated stats adjusted
+     *  2) Recalc format used when stats have been recalculated caused
+     *     by equipment or status effects being modified.
+     *  3) Recalc extended format
      */
     void GetEntityStatsPacketData(libcomp::Packet& p,
         const std::shared_ptr<objects::EntityStats>& coreStats,
         const std::shared_ptr<ActiveEntityState>& state,
-        bool boostFormat);
+        uint8_t format);
 
 private:
     /**
@@ -326,7 +539,7 @@ private:
      * @param data Pointer to the level up definition of a demon
      * @param boostLevel Boost level to use when calculating the stat increases
      */
-    void BoostStats(std::unordered_map<uint8_t, int16_t>& stats,
+    void BoostStats(libcomp::EnumMap<CorrectTbl, int16_t>& stats,
         const std::shared_ptr<objects::MiDevilLVUpData>& data, int boostLevel);
 
     /// Pointer to the channel server

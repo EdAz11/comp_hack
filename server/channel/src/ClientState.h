@@ -34,6 +34,12 @@
 #include <Character.h>
 #include <ClientStateObject.h>
 #include <Demon.h>
+#include <PartyCharacter.h>
+
+namespace libcomp
+{
+class Packet;
+}
 
 namespace channel
 {
@@ -56,7 +62,8 @@ public:
     ClientState();
 
     /**
-     * Clean up the client state.
+     * Clean up the client state, removing it from the registry
+     * if it exists there.
      */
     virtual ~ClientState();
 
@@ -87,6 +94,13 @@ public:
      *  exists
      */
     std::shared_ptr<ActiveEntityState> GetEntityState(int32_t entityID);
+
+    /**
+     * Registers the client state with the static entity map for access by
+     * other clients.
+     * @return true if the state was registered properly, otherwise false
+     */
+    bool Register();
 
     /**
      * Get the object ID associated a UUID associated to the client.
@@ -120,11 +134,41 @@ public:
     uint8_t GetNextActivatedAbilityID();
 
     /**
-     * Check if the client state has everything needed to start
-     * being used.
-     * @return true if the state is ready to use, otherwise false
+     * Get the UID of the account associated to the client.
+     * @return UID of the account associated to the client
      */
-    bool Ready();
+    const libobjgen::UUID GetAccountUID() const;
+
+    /**
+     * Get a current party character representation from the
+     *.associated CharacterState.
+     * @param includeDemon true if the demon state is set
+     *  on the member variable of the party character
+     * @return Pointer to a party character representation
+     */
+    std::shared_ptr<objects::PartyCharacter> GetPartyCharacter(
+        bool includeDemon) const;
+
+    /**
+     * Get a current party demon representation from the
+     * associated DemonState.
+     * @return Pointer to a party demon representation
+     */
+    std::shared_ptr<objects::PartyMember> GetPartyDemon() const;
+
+    /**
+     * Populate the supplied packet with an internal CharacterLogin
+     * packet containing character information.
+     * @param p Packet to populate
+     */
+    void GetPartyCharacterPacket(libcomp::Packet& p) const;
+
+    /**
+     * Populate the supplied packet with an internal CharacterLogin
+     * packet containing partner demon information.
+     * @param p Packet to populate
+     */
+    void GetPartyDemonPacket(libcomp::Packet& p) const;
 
     /**
      * Handle any actions needed when the game client pings the
@@ -149,7 +193,27 @@ public:
      */
     ServerTime ToServerTime(ClientTime time) const;
 
+    /**
+     * Get the client state associated to the supplied entity ID.
+     * @param id Entity ID or world ID associated to the client
+     *  state to retrieve
+     * @param worldID true if the ID is from the world, false if it is a
+     *  local entity ID
+     * @return Pointer to the client state associated to the ID or
+     *  nullptr if it does not exist
+     */
+    static ClientState* GetEntityClientState(int32_t id,
+        bool worldID = false);
+
 private:
+    /// Static registry of all client states sorted as world (true) or
+    /// local entity IDs (false) and their respective IDs
+    static std::unordered_map<bool,
+        std::unordered_map<int32_t, ClientState*>> sEntityClients;
+
+    /// Static lock for shared static resources
+    static std::mutex sLock;
+
     /// State of the character associated to the client
     std::shared_ptr<CharacterState> mCharacterState;
 

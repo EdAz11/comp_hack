@@ -39,8 +39,10 @@
 #include "Character.h"
 #include "CharacterProgress.h"
 #include "Demon.h"
+#include "DemonBox.h"
 #include "EntityStats.h"
 #include "Expertise.h"
+#include "FriendSettings.h"
 #include "Hotbar.h"
 #include "InheritedSkill.h"
 #include "Item.h"
@@ -58,11 +60,13 @@ PersistentObject::TypeMap PersistentObject::sTypeMap;
 std::unordered_map<std::string, size_t> PersistentObject::sTypeNames;
 std::unordered_map<size_t, std::function<PersistentObject*()>> PersistentObject::sFactory;
 
-PersistentObject::PersistentObject() : Object(), mUUID(), mDeleted(false)
+PersistentObject::PersistentObject() : Object(), mUUID(), mDirtyFields(),
+    mDeleted(false)
 {
 }
 
-PersistentObject::PersistentObject(const PersistentObject& other) : Object(), mUUID(), mDeleted(false)
+PersistentObject::PersistentObject(const PersistentObject& other) : Object(), mUUID(),
+    mDirtyFields(), mDeleted(false)
 {
     (void)other;
 
@@ -326,11 +330,17 @@ bool PersistentObject::Initialize()
     RegisterType(typeid(objects::Demon), objects::Demon::GetMetadata(),
         []() {  return (PersistentObject*)new objects::Demon(); });
 
+    RegisterType(typeid(objects::DemonBox), objects::DemonBox::GetMetadata(),
+        []() {  return (PersistentObject*)new objects::DemonBox(); });
+
     RegisterType(typeid(objects::EntityStats), objects::EntityStats::GetMetadata(),
         []() {  return (PersistentObject*)new objects::EntityStats(); });
 
     RegisterType(typeid(objects::Expertise), objects::Expertise::GetMetadata(),
         []() {  return (PersistentObject*)new objects::Expertise(); });
+
+    RegisterType(typeid(objects::FriendSettings), objects::FriendSettings::GetMetadata(),
+        []() {  return (PersistentObject*)new objects::FriendSettings(); });
 
     RegisterType(typeid(objects::Hotbar), objects::Hotbar::GetMetadata(),
         []() {  return (PersistentObject*)new objects::Hotbar(); });

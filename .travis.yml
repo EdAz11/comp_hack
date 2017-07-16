@@ -5,6 +5,10 @@ language: cpp
 jdk:
   - oraclejdk8
 
+cache:
+  directories:
+    - cache
+
 env:
   global:
    # The next declaration is the encrypted COVERITY_SCAN_TOKEN, created
@@ -12,6 +16,8 @@ env:
    - secure: "Ncn6/msd5oa9PiMYS5y3bpqbcqnB9Wwr7UIEtDS6fd1X01sk7aWF267kMNq8ijosJtk1P4vjKmZomfhTyQgILV6UkNkSDae5NOc39XM9yoysxc6LHTnF8/E5wXgbV1oDJR9kenrBzX49ZRJxwYa9WgXsGz4AiDyUB9eMy48eomnyNXG/SkZBbPmxaI0zSCACWH0VMHwvxHOHnaXHMOuQDVN+oxP4gEdQ/Cz2P0QJl1TvE5hpYB9fW/yItcdgL7sVkiFXbkZh5l3s52fGEN339e9CEEEEqnEUmFAzq0nsZNKZqh+ivh4Ga2qJa+btLGkEYyNQyKpOjy21Wx8UKY6uT5ZVxdSK943dbn0+v2nr0K++Hu2mRoq3btMfza5PZGQrK/XdOgathqxMoqSlKKXNo5qQoHfyjRLUscaZPsF/kWfnUoRGA90Eg6RLq59gsKkQjSJ0cWJ6Czt2txJZvmAZn51thBMJ3QW88+taDXkSVXsXkrdPjGPrwUt+okhvXJK5+PeSa+Fb4CJUiijOAg9Sew+WDJdsP9d0gVtEncXiVdAgdUFZ9wbyKCrjPisKxZWzzMDr+7tT3MQmg8FagPMkm5PW9Q+Ewof2VLjxffX+PhHcWvUrVqe8KBEVuJNs4SYG0ETsvp0+y8tyh5o+zAmc8fKsuYmEDNJ727rjrTfA56A="
 
 addons:
+  mariadb: '10.1'
+
   coverity_scan:
     project:
       name: "comphack/comp_hack"
@@ -46,63 +52,46 @@ matrix:
         - CMAKE_GENERATOR='Unix Makefiles'
 
 before_install:
+  - export ROOT_DIR=`pwd`
+  - export CACHE_DIR=`pwd`/cache
+  - cd ${CACHE_DIR}
+  - if [ ! -f ninja-linux.zip ]; then wget https://github.com/ninja-build/ninja/releases/download/v1.7.1/ninja-linux.zip; fi
+  - if [ ! -f cmake-3.6.1-Linux-x86_64.tar.gz ]; then wget -q https://cmake.org/files/v3.6/cmake-3.6.1-Linux-x86_64.tar.gz; fi
+  - if [ ! -f clang+llvm-3.8.0-x86_64-linux-gnu-ubuntu-14.04.tar.xz ]; then wget -q http://llvm.org/releases/3.8.0/clang+llvm-3.8.0-x86_64-linux-gnu-ubuntu-14.04.tar.xz; fi
+  - ls -lh
+  - cd ${ROOT_DIR}
   - sudo apt-get update -q
-  - sudo apt-get install libssl-dev docbook-xsl doxygen texlive-font-utils xmlto libsqlite3-dev sqlite3 libuv-dev libqt5webkit5-dev unzip -y
-  - export cwd="`pwd`"
+  - sudo apt-get install libssl-dev docbook-xsl doxygen texlive-font-utils xmlto libsqlite3-dev sqlite3 libuv-dev libqt5webkit5-dev unzip ruby ruby-rspec-core ruby-mechanize ruby-json -y
   - sudo mkdir -p /opt/ninja/bin
   - cd /opt/ninja/bin
-  - sudo wget https://github.com/ninja-build/ninja/releases/download/v1.7.1/ninja-linux.zip
-  - sudo unzip ninja-linux.zip
+  - sudo unzip $CACHE_DIR/ninja-linux.zip
   - sudo chmod 755 ninja
-  - sudo mkdir -p /var/lib/comp_hack/zones
   - sudo mkdir -p /var/log/comp_hack
   - sudo chown `whoami`:`whoami` /var/log/comp_hack
-  - sudo rm ninja-linux.zip
   - export PATH="/opt/ninja/bin:${PATH}"
   - cd /opt
-  - sudo wget -q https://cmake.org/files/v3.6/cmake-3.6.1-Linux-x86_64.tar.gz
-  - sudo tar xf cmake-3.6.1-Linux-x86_64.tar.gz
-  - sudo rm cmake-3.6.1-Linux-x86_64.tar.gz
+  - sudo tar xf $CACHE_DIR/cmake-3.6.1-Linux-x86_64.tar.gz
   - export PATH="/opt/cmake-3.6.1-Linux-x86_64/bin:${PATH}"
   - export LD_LIBRARY_PATH="/opt/cmake-3.6.1-Linux-x86_64/lib"
-  - cd $cwd
-  - if [ "$CXX" == "clang++" ]; then export cwd="`pwd`"; fi
+  - cd ${ROOT_DIR}
   - if [ "$CXX" == "clang++" ]; then cd /opt; fi
-  - if [ "$CXX" == "clang++" ]; then sudo wget -q http://llvm.org/releases/3.8.0/clang+llvm-3.8.0-x86_64-linux-gnu-ubuntu-14.04.tar.xz; fi
-  - if [ "$CXX" == "clang++" ]; then sudo tar xf clang+llvm-3.8.0-x86_64-linux-gnu-ubuntu-14.04.tar.xz; fi
-  - if [ "$CXX" == "clang++" ]; then sudo rm clang+llvm-3.8.0-x86_64-linux-gnu-ubuntu-14.04.tar.xz; fi
+  - if [ "$CXX" == "clang++" ]; then sudo tar xf $CACHE_DIR/clang+llvm-3.8.0-x86_64-linux-gnu-ubuntu-14.04.tar.xz; fi
   - if [ "$CXX" == "clang++" ]; then export PATH="/opt/clang+llvm-3.8.0-x86_64-linux-gnu-ubuntu-14.04/bin:${PATH}"; fi
   - if [ "$CXX" == "clang++" ]; then export LD_LIBRARY_PATH="/opt/clang+llvm-3.8.0-x86_64-linux-gnu-ubuntu-14.04/lib:${LD_LIBRARY_PATH}"; fi
-  - if [ "$CXX" == "clang++" ]; then cd "$cwd"; fi
+  - if [ "$CXX" == "clang++" ]; then cd ${ROOT_DIR}; fi
   - export CC="${COMPILER_CC}"
   - export CXX="${COMPILER_CXX}"
   - export GENERATOR="${CMAKE_GENERATOR}"
   - export CTEST_OUTPUT_ON_FAILURE=1
 
+before_script:
+  - mysql -u root < contrib/testing/MariaDBTestSetup.sql
+  - rm -rf ~/.rvm* ~/.gem* # Do this to prevent issues with rspec.
+
 script:
   - jdk_switcher use oraclejdk8
   - java -version
-  - wget http://apache.claz.org/cassandra/3.10/apache-cassandra-3.10-bin.tar.gz
-  - tar xzf apache-cassandra-3.10-bin.tar.gz
-  - sudo mv apache-cassandra-3.10 /opt/cassandra
-  - rm apache-cassandra-3.10-bin.tar.gz
-  - sudo mkdir /var/lib/cassandra
-  - sudo mkdir /var/log/cassandra
-  - sudo chown -R $USER:$GROUP /var/lib/cassandra
-  - sudo chown -R $USER:$GROUP /var/log/cassandra
-  - export CASSANDRA_HOME="/opt/cassandra"
-  - export PATH="$PATH:$CASSANDRA_HOME/bin"
-  - sudo sh "$CASSANDRA_HOME/bin/cassandra" -R
-  - sudo mkdir /etc/comp_hack
-  - sudo cp contrib/testing/*.xml /etc/comp_hack/
   - mkdir -p build && cd build && cmake -G "${GENERATOR}" .. && cmake --build .
   - cmake --build . --target doc
   - cmake --build . --target guide
-  - bin/comp_lobby --test &
-  - sleep 10
-  - bin/comp_world &
-  - sleep 10
-  - bin/comp_channel &
-  - nodetool status
-  - cqlsh -e "SHOW HOST; SHOW VERSION;"
   - cmake --build . --target test

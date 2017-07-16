@@ -35,43 +35,47 @@
 #endif // _WIN32
 
 // libcomp Includes
-#include <DatabaseCassandra.h>
+#include <DatabaseMariaDB.h>
 #include <DatabaseSQLite3.h>
 #include <Decrypt.h>
 #include <Log.h>
 #include <MessageInit.h>
+#include <ServerCommandLineParser.h>
 
 // object Includes
 #include <Account.h>
 
 using namespace libcomp;
 
-BaseServer::BaseServer(const char *szProgram, std::shared_ptr<
-    objects::ServerConfig> config, const String& configPath) :
-    TcpServer("any", config->GetPort()), mConfig(config), mDataStore(szProgram)
+std::string BaseServer::sConfigPath;
+
+BaseServer::BaseServer(const char *szProgram,
+    std::shared_ptr<objects::ServerConfig> config,
+    std::shared_ptr<ServerCommandLineParser> commandLine) :
+    TcpServer("any", config->GetPort()), mConfig(config),
+    mCommandLine(commandLine), mDataStore(szProgram)
 {
-    ReadConfig(config, configPath);
 }
 
 bool BaseServer::Initialize()
 {
-    auto log = libcomp::Log::GetSingletonPtr();
+    SetDiffieHellman(LoadDiffieHellman(
+        mConfig->GetDiffieHellmanKeyPair()));
 
-    log->SetLogLevelEnabled(libcomp::Log::LOG_LEVEL_DEBUG,
-        mConfig->GetLogDebug());
-    log->SetLogLevelEnabled(libcomp::Log::LOG_LEVEL_INFO,
-        mConfig->GetLogInfo());
-    log->SetLogLevelEnabled(libcomp::Log::LOG_LEVEL_WARNING,
-        mConfig->GetLogWarning());
-    log->SetLogLevelEnabled(libcomp::Log::LOG_LEVEL_ERROR,
-        mConfig->GetLogError());
-    log->SetLogLevelEnabled(libcomp::Log::LOG_LEVEL_CRITICAL,
-        mConfig->GetLogCritical());
-
-    if(!mConfig->GetLogFile().IsEmpty())
+    if(nullptr == GetDiffieHellman())
     {
-        log->SetLogPath(mConfig->GetLogFile());
+        LOG_WARNING("No DH key pair set in the config file, it will"
+            " need to be generated on startup.\n");
     }
+
+    if(mConfig->GetPort() == 0)
+    {
+        LOG_WARNING("No port specified.\n");
+        return false;
+    }
+
+    LOG_DEBUG(libcomp::String("Port: %1\n").Arg(
+        mConfig->GetPort()));
 
     if(0 == mConfig->DataStoreCount())
     {
@@ -90,8 +94,8 @@ bool BaseServer::Initialize()
         case objects::ServerConfig::DatabaseType_t::SQLITE3:
             LOG_DEBUG("Using SQLite3 Database.\n");
             break;
-        case objects::ServerConfig::DatabaseType_t::CASSANDRA:
-            LOG_DEBUG("Using Cassandra Database.\n");
+        case objects::ServerConfig::DatabaseType_t::MARIADB:
+            LOG_DEBUG("Using MariaDB Database.\n");
             break;
         default:
             LOG_CRITICAL("Invalid database type specified.\n");
@@ -128,17 +132,16 @@ void BaseServer::FinishInitialize()
 }
 
 std::shared_ptr<Database> BaseServer::GetDatabase(
+    objects::ServerConfig::DatabaseType_t dbType,
     const EnumMap<objects::ServerConfig::DatabaseType_t,
-    std::shared_ptr<objects::DatabaseConfig>>& configMap, bool performSetup)
+    std::shared_ptr<objects::DatabaseConfig>>& configMap)
 {
-    auto type = mConfig->GetDatabaseType();
-    
-    auto configIter = configMap.find(type);
+    auto configIter = configMap.find(dbType);
     bool configExists = configIter != configMap.end() &&
         configIter->second != nullptr;
 
     std::shared_ptr<Database> db;
-    switch(type)
+    switch(dbType)
     {
         case objects::ServerConfig::DatabaseType_t::SQLITE3:
             if(configExists)
@@ -153,17 +156,17 @@ std::shared_ptr<Database> BaseServer::GetDatabase(
                 LOG_CRITICAL("No SQLite3 Database configuration specified.\n");
             }
             break;
-        case objects::ServerConfig::DatabaseType_t::CASSANDRA:
+        case objects::ServerConfig::DatabaseType_t::MARIADB:
             if(configExists)
             {
-                auto cassandraConfig = std::dynamic_pointer_cast<
-                    objects::DatabaseConfigCassandra>(configIter->second);
+                auto sqlConfig = std::dynamic_pointer_cast<
+                    objects::DatabaseConfigMariaDB>(configIter->second);
                 db = std::shared_ptr<libcomp::Database>(
-                    new libcomp::DatabaseCassandra(cassandraConfig));
+                    new libcomp::DatabaseMariaDB(sqlConfig));
             }
             else
             {
-                LOG_CRITICAL("No Cassandra Database configuration specified.\n");
+                LOG_CRITICAL("No MariaDB Database configuration specified.\n");
             }
             break;
         default:
@@ -183,16 +186,43 @@ std::shared_ptr<Database> BaseServer::GetDatabase(
         return nullptr;
     }
 
+    return db;
+}
+
+std::shared_ptr<Database> BaseServer::GetDatabase(
+    const EnumMap<objects::ServerConfig::DatabaseType_t,
+    std::shared_ptr<objects::DatabaseConfig>>& configMap, bool performSetup)
+{
+    auto dbType = mConfig->GetDatabaseType();
+
+    std::shared_ptr<Database> db = GetDatabase(dbType, configMap);
+
     bool initFailure = false;
     if(performSetup)
     {
+        auto configIter = configMap.find(dbType);
+
         bool createMockData = configIter->second->GetMockData();
         initFailure = !db->Setup(createMockData);
         if(!initFailure && createMockData)
         {
-            std::string configPath = GetDefaultConfigPath() +
-                configIter->second->GetMockDataFilename().ToUtf8();
-            initFailure = !InsertDataFromFile(configPath, db);
+            auto configFile = configIter->second->GetMockDataFilename();
+            if(configFile.IsEmpty())
+            {
+                LOG_CRITICAL("Data mocking enabled but no setup file"
+                    " specified.\n");
+                initFailure = true;
+            }
+            else
+            {
+                std::string configPath = GetConfigPath() +
+                    configFile.ToUtf8();
+                if(!InsertDataFromFile(configPath, db))
+                {
+                    LOG_CRITICAL("Mock data failed to insert.\n");
+                    initFailure = true;
+                }
+            }
         }
     }
     else
@@ -238,6 +268,23 @@ int BaseServer::Run()
     return 0;
 }
 
+void BaseServer::ServerReady()
+{
+    TcpServer::ServerReady();
+
+    int32_t pid = mCommandLine->GetNotifyProcess();
+
+    if(0 < pid)
+    {
+#ifndef _WIN32
+        LOG_DEBUG(String("Sending startup notification to "
+            "PID %1\n").Arg(pid));
+
+        kill((pid_t)pid, SIGUSR2);
+#endif // !_WIN32
+    }
+}
+
 void BaseServer::Shutdown()
 {
     mMainWorker.Shutdown();
@@ -247,6 +294,23 @@ void BaseServer::Shutdown()
     {
         worker->Shutdown();
     }
+}
+
+std::string BaseServer::GetConfigPath()
+{
+    if(!sConfigPath.empty())
+    {
+        return sConfigPath;
+    }
+    else
+    {
+        return GetDefaultConfigPath();
+    }
+}
+
+void BaseServer::SetConfigPath(const std::string& path)
+{
+    sConfigPath = path;
 }
 
 std::string BaseServer::GetDefaultConfigPath()
@@ -293,32 +357,28 @@ bool BaseServer::ReadConfig(std::shared_ptr<objects::ServerConfig> config, tinyx
 
     if(nullptr == pObject || !config->Load(doc, *pObject))
     {
-        LOG_WARNING("Failed to load config file\n");
         return false;
     }
     else
     {
-        //Set the shared members
-        LOG_DEBUG(libcomp::String("DH Pair: %1\n").Arg(
-            config->GetDiffieHellmanKeyPair()));
+        auto log = libcomp::Log::GetSingletonPtr();
 
-        SetDiffieHellman(LoadDiffieHellman(
-            config->GetDiffieHellmanKeyPair()));
+        log->SetLogLevelEnabled(libcomp::Log::LOG_LEVEL_DEBUG,
+            config->GetLogDebug());
+        log->SetLogLevelEnabled(libcomp::Log::LOG_LEVEL_INFO,
+            config->GetLogInfo());
+        log->SetLogLevelEnabled(libcomp::Log::LOG_LEVEL_WARNING,
+            config->GetLogWarning());
+        log->SetLogLevelEnabled(libcomp::Log::LOG_LEVEL_ERROR,
+            config->GetLogError());
+        log->SetLogLevelEnabled(libcomp::Log::LOG_LEVEL_CRITICAL,
+            config->GetLogCritical());
 
-        if(nullptr == GetDiffieHellman())
+        if(!config->GetLogFile().IsEmpty())
         {
-            LOG_WARNING("Failed to load DH key pair from config file\n");
-            return false;
+            log->SetLogPath(config->GetLogFile(), !config->GetLogFileAppend());
+            log->SetLogFileTimestampsEnabled(config->GetLogFileTimestamp());
         }
-
-        if(config->GetPort() == 0)
-        {
-            LOG_WARNING("No port specified\n");
-            return false;
-        }
-
-        LOG_DEBUG(libcomp::String("Port: %1\n").Arg(
-            config->GetPort()));
     }
 
     return true;
@@ -427,8 +487,6 @@ bool BaseServer::ProcessMessage(const libcomp::Message::Message *pMessage)
 bool BaseServer::InsertDataFromFile(const libcomp::String& filePath,
     const std::shared_ptr<Database>& db, const std::set<std::string>& specificTypes)
 {
-    bool recordsFound = false;
-    
     tinyxml2::XMLDocument doc;
     if(tinyxml2::XML_SUCCESS != doc.LoadFile(filePath.C()))
     {
@@ -508,8 +566,8 @@ bool BaseServer::InsertDataFromFile(const libcomp::String& filePath,
         record->Unregister();
 
         objXml = objXml->NextSiblingElement("object");
-        recordsFound = true;
     }
 
-    return recordsFound;
+    // Allow no records as a means to clear out the DB on restart
+    return true;
 }

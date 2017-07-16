@@ -53,52 +53,7 @@ bool Parsers::WorldList::Parse(libcomp::ManagerPacket *pPacketManager,
     reply.WritePacketCode(LobbyToClientPacketCode_t::PACKET_WORLD_LIST);
 
     auto server = std::dynamic_pointer_cast<LobbyServer>(pPacketManager->GetServer());
-
-    auto worlds = server->GetWorlds();
-    worlds.remove_if([](const std::shared_ptr<lobby::World>& world)
-        {
-            return world->GetRegisteredWorld()->GetStatus()
-                == objects::RegisteredWorld::Status_t::INACTIVE;
-        });
-
-    // World count.
-    reply.WriteU8((uint8_t)worlds.size());
-
-    // Add each world to the list.
-    for(auto world : worlds)
-    {
-        auto worldServer = world->GetRegisteredWorld();
-
-        // ID for this world.
-        reply.WriteU8(worldServer->GetID());
-
-        // Name of the world.
-        reply.WriteString16Little(libcomp::Convert::ENCODING_UTF8,
-            worldServer->GetName(), true);
-
-        auto channels = world->GetChannels();
-
-        // Number of channels on this world.
-        reply.WriteU8((uint8_t)channels.size());
-
-        // Add each channel for this world.
-        for(auto channel : channels)
-        {
-            // Name of the channel. This used to be displayed in the channel
-            // list that was hidden from the user.
-            reply.WriteString16Little(libcomp::Convert::ENCODING_UTF8,
-                channel->GetName(), true);
-
-            // Ping time??? Again, something that used to be in the list.
-            reply.WriteU16Little(1);
-
-            // 0 - Visible | 2 - Hidden (or PvP)
-            // Pointless without the list.
-            reply.WriteU8(0);
-        }
-    }
-
-    connection->SendPacket(reply);
+    server->SendWorldList(connection);
 
     return true;
 }

@@ -80,6 +80,13 @@ public:
     virtual bool Setup(bool rebuild = false);
     virtual bool Use();
 
+    /**
+     * Check if the supplied table name exists and has at least one row.
+     * @param table Name of the table to check
+     * @return true if a row exists, false if it does not
+     */
+    virtual bool TableHasRows(const String& table);
+
     virtual std::list<std::shared_ptr<PersistentObject>> LoadObjects(
         size_t typeHash, DatabaseBind *pValue);
 
@@ -100,16 +107,22 @@ public:
      */
     bool VerifyAndSetupSchema(bool recreateTables = false);
 
-    /**
-     * Check if this database is configured to use the default file
-     * for the SQLite3 database.  Non-default file connections are
-     * only responsible for verifying the schema of their own tables where-as
-     * default file connections may also have additional tables to maintain.
-     * @return true if the default file is configured, false if it is not
-     */
-    bool UsingDefaultDatabaseFile();
+protected:
+    virtual bool ProcessStandardChangeSet(const std::shared_ptr<
+        DBStandardChangeSet>& changes);
+    virtual bool ProcessOperationalChangeSet(const std::shared_ptr<
+        DBOperationalChangeSet>& changes);
 
 private:
+    /**
+     * Process and explicit update to a single record, checking each column's
+     * state before and verifying it set to the expected value afterwards.
+     * @param update Pointer to the explicit update
+     * @return true if the the updated succeeded, false if it did not
+     */
+    bool ProcessExplicitUpdate(const std::shared_ptr<
+        DBExplicitUpdate>& update);
+
     /**
      * Get the path to the database file to use.
      * @return Path to the database file to use

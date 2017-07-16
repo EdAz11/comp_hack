@@ -22,7 +22,7 @@ SET_PROPERTY(GLOBAL PROPERTY USE_FOLDERS ON)
 
 # Only show Debug and Release configurations in Visual Studio.
 IF(CMAKE_CONFIGURATION_TYPES)
-    SET(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "" FORCE)
+    SET(CMAKE_CONFIGURATION_TYPES "Debug;Release;RelWithDebInfo" CACHE STRING "" FORCE)
 ENDIF()
 
 PROJECT(comp_hack)
@@ -72,6 +72,15 @@ ENDIF()
 
 INCLUDE(${CMAKE_MODULE_PATH}/DetermineOS.cmake)
 
+# If the build should be optimized.
+OPTION(BUILD_OPTIMIZED "Build an optimized release of the server." ON)
+
+IF(BUILD_OPTIMIZED)
+    SET(BUILD_VALGRIND_FRIENDLY OFF)
+ELSE()
+    SET(BUILD_VALGRIND_FRIENDLY ON)
+ENDIF()
+
 # Include all build code for external projects.
 INCLUDE(${CMAKE_MODULE_PATH}/external.cmake)
 
@@ -100,9 +109,6 @@ SET(SQLITE3_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/deps/sqlite3")
 
 # Enable testing.
 INCLUDE(CTest)
-
-# If the build should be optimized.
-OPTION(BUILD_OPTIMIZED "Build an optimized release of the server." ON)
 
 # Determine if the system is big or little endian.
 INCLUDE(TestBigEndian)
@@ -348,7 +354,8 @@ MACRO(CREATE_GTESTS)
                 ${CMAKE_THREAD_LIBS_INIT} ${ZLIB_LIBRARIES})
 
             # Add the test to CTest.
-            ADD_TEST(NAME ${test} COMMAND ${EXECUTABLE_OUTPUT_PATH}/${ttest})
+            ADD_TEST(NAME ${test} COMMAND ${EXECUTABLE_OUTPUT_PATH}/${ttest}
+                WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
         ELSE() # Must be a library.
             # Add the library to the list.
             SET(TEST_LIBS ${TEST_LIBS} ${test})
@@ -417,6 +424,16 @@ MACRO(OBJGEN_XML outfiles xml)
     SET(${outfiles} ${${outfiles}} ${outs})
 ENDMACRO(OBJGEN_XML outfiles xml)
 
+# Macro to create rspec tests (web testing with ruby).
+MACRO(RSPEC_TESTS)
+    FOREACH(test ${ARGN})
+        ADD_TEST(NAME ${test} COMMAND rspec ${test}.rb
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/rspec)
+        SET_PROPERTY(TEST ${test} PROPERTY ENVIRONMENT
+            "TESTING_DIR=${CMAKE_BINARY_DIR}")
+    ENDFOREACH(test ${ARGN})
+ENDMACRO(RSPEC_TESTS)
+
 ADD_SUBDIRECTORY(libcomp)
 #ADD_SUBDIRECTORY(chanman)
 
@@ -428,7 +445,12 @@ ENDIF(IS_DIRECTORY "${CMAKE_SOURCE_DIR}/client" AND NOT ${DISABLE_CLIENT})
 
 #ADD_SUBDIRECTORY(console)
 ADD_SUBDIRECTORY(server)
-ADD_SUBDIRECTORY(libtester)
+
+# Windows does not have the server spawning code.
+IF(NOT WIN32)
+    ADD_SUBDIRECTORY(libtester)
+ENDIF(NOT WIN32)
+
 #ADD_SUBDIRECTORY(updater)
 
 # Add all the documentation targets to a single target "doc".
@@ -459,3 +481,7 @@ IF(NOT WIN32)
     INSTALL(FILES icons/64x64/comp_hack.png
         DESTINATION share/app-install/icons)
 ENDIF(NOT WIN32)
+
+# Copy all contrib/testing to the bin directory.
+FILE(COPY "${CMAKE_SOURCE_DIR}/contrib/testing"
+    DESTINATION "${CMAKE_BINARY_DIR}/bin")

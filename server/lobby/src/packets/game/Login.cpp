@@ -44,6 +44,19 @@
 
 using namespace lobby;
 
+static bool LoginError(const std::shared_ptr<
+    libcomp::TcpConnection>& connection, ErrorCodes_t errorCode)
+{
+    /// @todo Return different error codes like an account is banned.
+    libcomp::Packet reply;
+    reply.WritePacketCode(LobbyToClientPacketCode_t::PACKET_LOGIN);
+    reply.WriteS32Little(to_underlying(errorCode));
+
+    connection->SendPacket(reply);
+
+    return true;
+}
+
 bool Parsers::Login::Parse(libcomp::ManagerPacket *pPacketManager,
     const std::shared_ptr<libcomp::TcpConnection>& connection,
     libcomp::ReadOnlyPacket& p) const
@@ -75,19 +88,33 @@ bool Parsers::Login::Parse(libcomp::ManagerPacket *pPacketManager,
 
     if(clientVersion != obj.GetClientVersion())
     {
-        reply.SetResponseCode(to_underlying(
-            ErrorCodes_t::WRONG_CLIENT_VERSION));
+        return LoginError(connection, ErrorCodes_t::WRONG_CLIENT_VERSION);
     }
     else if(nullptr == account)
     {
-        reply.SetResponseCode(to_underlying(
-            ErrorCodes_t::BAD_USERNAME_PASSWORD));
+        return LoginError(connection, ErrorCodes_t::BAD_USERNAME_PASSWORD);
     }
     else
     {
+        auto username = obj.GetUsername();
+        auto sessionManager = server->GetSessionManager();
+
+        // If an expired session exists, expire it and log the user out
+        if(sessionManager->HasExpiredSession(username))
+        {
+            int8_t loginWorldID;
+            accountManager->IsLoggedIn(username, loginWorldID);
+            sessionManager->ExpireSession(username);
+            accountManager->LogoutUser(username, loginWorldID);
+        }
+
         auto login = std::shared_ptr<objects::AccountLogin>(new objects::AccountLogin);
         login->SetAccount(account);
-        accountManager->LoginUser(obj.GetUsername(), login);
+
+        if(!accountManager->LoginUser(username, login))
+        {
+            return LoginError(connection, ErrorCodes_t::ACCOUNT_STILL_LOGGED_IN);
+        }
 
         state(connection)->SetAccount(account);
         server->GetManagerConnection()->SetClientConnection(
@@ -97,6 +124,8 @@ bool Parsers::Login::Parse(libcomp::ManagerPacket *pPacketManager,
             ErrorCodes_t::SUCCESS));
         reply.SetChallenge(0xCAFEBABE); /// @todo generate, save, and use.
         reply.SetSalt(account->GetSalt());
+
+        state(connection)->SetLoggedIn(true);
     }
 
     return connection->SendObject(reply);

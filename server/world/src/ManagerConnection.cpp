@@ -142,14 +142,39 @@ void ManagerConnection::RemoveConnection(std::shared_ptr<libcomp::InternalConnec
             int8_t channelID)
             {
                 auto accountManager = worldServer->GetAccountManager();
-                auto usernames = accountManager->LogoutUsersOnChannel(channelID);
+                auto characterManager = worldServer->GetCharacterManager();
+                auto loggedOut = accountManager->LogoutUsersOnChannel(channelID);
 
-                if(usernames.size() > 0)
+                if(loggedOut.size() > 0)
                 {
                     LOG_WARNING(libcomp::String("%1 user(s) forcefully logged out"
-                        " from channel %2.\n").Arg(usernames.size()).Arg(channelID));
+                        " from channel %2.\n").Arg(loggedOut.size()).Arg(channelID));
+
+                    std::list<std::shared_ptr<objects::CharacterLogin>> cLogOuts;
+                    for(auto logOut : loggedOut)
+                    {
+                        auto cLogin = logOut->GetCharacterLogin();
+
+                        characterManager->PartyLeave(cLogin, nullptr, true);
+
+                        cLogOuts.push_back(cLogin);
+                    }
+
+                    characterManager->SendStatusToRelatedCharacters(cLogOuts,
+                        (uint8_t)CharacterLoginStateFlag_t::CHARLOGIN_BASIC);
                 }
             }, server, svr->GetID());
+
+        std::list<std::shared_ptr<libcomp::TcpConnection>> connections;
+        connections.push_back(mLobbyConnection);
+
+        for(auto kv : server->GetChannels())
+        {
+            if(kv.first != connection)
+            {
+                connections.push_back(kv.first);
+            }
+        }
 
         //Channel disconnected
         libcomp::Packet packet;
@@ -158,6 +183,7 @@ void ManagerConnection::RemoveConnection(std::shared_ptr<libcomp::InternalConnec
         packet.WriteU8(to_underlying(
             InternalPacketAction_t::PACKET_ACTION_REMOVE));
         packet.WriteU8(svr->GetID());
-        mLobbyConnection->SendPacket(packet);
+
+        libcomp::TcpConnection::BroadcastPacket(connections, packet);
     }
 }

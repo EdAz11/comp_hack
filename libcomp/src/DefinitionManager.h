@@ -34,6 +34,7 @@
 #include "CString.h"
 #include "DataStore.h"
 #include "Decrypt.h"
+#include "MiCorrectTbl.h"
 #include "Object.h"
 
 // Standard C++11 Includes
@@ -50,7 +51,9 @@ class MiExpertData;
 class MiHNPCData;
 class MiItemData;
 class MiONPCData;
+class MiShopProductData;
 class MiSkillData;
+class MiStatusData;
 class MiZoneData;
 }
 
@@ -143,11 +146,25 @@ public:
     const std::shared_ptr<objects::MiONPCData> GetONPCData(uint32_t id);
 
     /**
+     * Get the shop product definition corresponding to an ID
+     * @param id Shop product ID to retrieve
+     * @return Pointer to the matching shop product definition, null if it does not exist
+     */
+    const std::shared_ptr<objects::MiShopProductData> GetShopProductData(uint32_t id);
+
+    /**
      * Get the skill definition corresponding to an ID
      * @param id Skill ID to retrieve
      * @return Pointer to the matching skill definition, null if it does not exist
      */
     const std::shared_ptr<objects::MiSkillData> GetSkillData(uint32_t id);
+
+    /**
+     * Get the status definition corresponding to an ID
+     * @param id Status ID to retrieve
+     * @return Pointer to the matching skill definition, null if it does not exist
+     */
+    const std::shared_ptr<objects::MiStatusData> GetStatusData(uint32_t id);
 
     /**
      * Get the zone definition corresponding to an ID
@@ -241,11 +258,25 @@ public:
     bool LoadONPCData(gsl::not_null<DataStore*> pDataStore);
 
     /**
+     * Load the shop product binary data definitions
+     * @param pDataStore Pointer to the datastore to load binary file from
+     * @return true on success, false on failure
+     */
+    bool LoadShopProductData(gsl::not_null<DataStore*> pDataStore);
+
+    /**
      * Load the skill binary data definitions
      * @param pDataStore Pointer to the datastore to load binary file from
      * @return true on success, false on failure
      */
     bool LoadSkillData(gsl::not_null<DataStore*> pDataStore);
+
+    /**
+     * Load the status binary data definitions
+     * @param pDataStore Pointer to the datastore to load binary file from
+     * @return true on success, false on failure
+     */
+    bool LoadStatusData(gsl::not_null<DataStore*> pDataStore);
 
     /**
      * Load the zone binary data definitions
@@ -414,9 +445,17 @@ private:
     std::unordered_map<uint32_t,
         std::shared_ptr<objects::MiONPCData>> mONPCData;
 
+    /// Map of shop product definitions by ID
+    std::unordered_map<uint32_t,
+        std::shared_ptr<objects::MiShopProductData>> mShopProductData;
+
     /// Map of skill definitions by ID
     std::unordered_map<uint32_t,
         std::shared_ptr<objects::MiSkillData>> mSkillData;
+
+    /// Map of status definitions by ID
+    std::unordered_map<uint32_t,
+        std::shared_ptr<objects::MiStatusData>> mStatusData;
 
     /// Map of zone definitions by ID
     std::unordered_map<uint32_t,

@@ -39,6 +39,8 @@
 // object Includes
 #include <Account.h>
 #include <AccountLogin.h>
+#include <Character.h>
+#include <CharacterLogin.h>
 
 // lobby Includes
 #include "LobbyServer.h"
@@ -48,9 +50,10 @@ using namespace lobby;
 void UpdateAccountLogin(std::shared_ptr<LobbyServer> server,
     const std::shared_ptr<objects::AccountLogin> login)
 {
-    auto cid = login->GetCID();
-    auto worldID = login->GetWorldID();
-    auto channelID = login->GetChannelID();
+    auto cLogin = login->GetCharacterLogin();
+    auto character = cLogin->GetCharacter();
+    auto worldID = cLogin->GetWorldID();
+    auto channelID = cLogin->GetChannelID();
     if(0 > worldID || 0 > channelID)
     {
         LOG_ERROR("Invalid channel or world ID received for AccountLogin.\n");
@@ -63,8 +66,8 @@ void UpdateAccountLogin(std::shared_ptr<LobbyServer> server,
         return;
     }
 
-    //Should be the same one we passed in
-    auto account = login->GetAccount().Get(world->GetWorldDatabase());
+    // Should be the same one we passed in
+    auto account = login->GetAccount().Get(server->GetMainDatabase());
     if(nullptr == account)
     {
         return;
@@ -86,38 +89,52 @@ void UpdateAccountLogin(std::shared_ptr<LobbyServer> server,
         return;
     }
 
+    int8_t timeout = 0;
     auto clientConnection = server->GetManagerConnection()->GetClientConnection(
         account->GetUsername());
     if(nullptr != clientConnection && currentWorldID == -1)
     {
-        LOG_DEBUG(libcomp::String("Login character with ID %1 into world %2, channel %3\n"
-            ).Arg(cid).Arg(worldID).Arg(channelID));
+        // Initial login response from the world
+        LOG_DEBUG(libcomp::String("Login character with UUID '%1' into world %2, channel %3\n"
+            ).Arg(character.GetUUID().ToString()).Arg(worldID).Arg(channelID));
 
         libcomp::Packet reply;
         reply.WritePacketCode(LobbyToClientPacketCode_t::PACKET_START_GAME);
 
-        // Some session key.
+        // Current session key
         reply.WriteU32Little(login->GetSessionKey());
 
-        // Server address.
+        // Server address
         reply.WriteString16Little(libcomp::Convert::ENCODING_UTF8,
             libcomp::String("%1:%2").Arg(channel->GetIP()).Arg(channel->GetPort()), true);
 
-        // Character ID.
-        reply.WriteU8(cid);
+        // Character (account) ID
+        reply.WriteU8(character->GetCID());
 
         clientConnection->SendPacket(reply);
+
+        // 10 seconds until the connection to the channel is considered a failure
+        timeout = 10;
     }
     
-    //Always refresh the connection
+    // Always refresh the connection
     if(!accountManager->LogoutUser(username, currentWorldID))
     {
         return;
     }
     accountManager->LoginUser(username, login);
 
-    //Clear the session expiration
-    server->GetSessionManager()->RefreshSession(username);
+    auto sessionManager = server->GetSessionManager();
+    if(timeout)
+    {
+        // Set a session expiration time
+        sessionManager->ExpireSession(username, timeout);
+    }
+    else
+    {
+        // Clear the session expiration
+        sessionManager->RefreshSession(username);
+    }
 }
 
 bool Parsers::AccountLogin::Parse(libcomp::ManagerPacket *pPacketManager,
@@ -127,7 +144,7 @@ bool Parsers::AccountLogin::Parse(libcomp::ManagerPacket *pPacketManager,
     (void)connection;
 
     auto response = std::shared_ptr<objects::AccountLogin>(new objects::AccountLogin);
-    if(!response->LoadPacket(p))
+    if(!response->LoadPacket(p, false))
     {
         LOG_ERROR("Invalid response received for AccountLogin.\n");
         return false;

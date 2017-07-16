@@ -54,13 +54,13 @@ public:
      * Create a new lobby server.
      * @param szProgram First command line argument for the application.
      * @param config Pointer to a casted LobbyConfig that will contain properties
-     *   every server has in addition to lobby specific ones.
-     * @param configPath File path to the location of the config to be loaded.
+     *  every server has in addition to lobby specific ones.
      * @param unitTestMode Debug parameter to use in unit tests.  Set to true
      *  to enable unit test mode.
      */
-    LobbyServer(const char *szProgram, std::shared_ptr<
-        objects::ServerConfig> config, const libcomp::String& configPath,
+    LobbyServer(const char *szProgram,
+        std::shared_ptr<objects::ServerConfig> config,
+        std::shared_ptr<libcomp::ServerCommandLineParser> commandLine,
         bool unitTestMode);
 
     /**
@@ -82,7 +82,7 @@ public:
      * Get a list of pointers to the connected worlds.
      * @return List of pointers to the connected worlds
      */
-    std::list<std::shared_ptr<lobby::World>> GetWorlds();
+    std::list<std::shared_ptr<lobby::World>> GetWorlds() const;
 
     /**
      * Get a world by ID.
@@ -108,6 +108,15 @@ public:
      */
     const std::shared_ptr<lobby::World> RegisterWorld(
         std::shared_ptr<lobby::World>& world);
+
+    /**
+     * Send the world list to either one or all client connections.
+     * @param connection Optional pointer to a specific connection to
+     *  send the world list to.  If not specified, all connections  will
+     *  be broadcast to instead.
+     */
+    void SendWorldList(const std::shared_ptr<
+        libcomp::TcpConnection>& connection) const;
 
     /**
      * Get the main database.

@@ -125,7 +125,7 @@ private:
      */
     bool ExecuteNormalSkill(const std::shared_ptr<ChannelClientConnection> client,
         int32_t sourceEntityID, std::shared_ptr<objects::ActivatedAbility> activated,
-        uint32_t hpCost, uint32_t mpCost);
+        int16_t hpCost, int16_t mpCost);
 
     /**
      * Execute post execution steps like notifying the client that the skill
@@ -139,7 +139,7 @@ private:
      */
     void FinalizeSkillExecution(const std::shared_ptr<ChannelClientConnection> client,
         int32_t sourceEntityID, std::shared_ptr<objects::ActivatedAbility> activated,
-        std::shared_ptr<objects::MiSkillData> skillData, uint32_t hpCost, uint32_t mpCost);
+        std::shared_ptr<objects::MiSkillData> skillData, int16_t hpCost, int16_t mpCost);
 
     /**
      * Execute the "equip item" ability.
@@ -169,6 +169,15 @@ private:
         int32_t sourceEntityID, std::shared_ptr<objects::ActivatedAbility> activated);
 
     /**
+     * Execute the ability "Traesto" which returns the user to their homepoint.
+     * @param client Pointer to the client connection that activated the skill
+     * @param sourceEntityID ID of the entity that activated the skill
+     * @param activated Pointer to the activated ability instance
+     */
+    bool Traesto(const std::shared_ptr<ChannelClientConnection> client,
+        int32_t sourceEntityID, std::shared_ptr<objects::ActivatedAbility> activated);
+
+    /**
      * Notify the client that a skill needs to charge.  The client will notify
      * the server when the specified charge time has elapsed for execution.
      * @param client Pointer to the client connection that activated the skill
@@ -189,7 +198,7 @@ private:
      */
     void SendExecuteSkill(const std::shared_ptr<ChannelClientConnection> client,
         int32_t sourceEntityID, std::shared_ptr<objects::ActivatedAbility> activated,
-        std::shared_ptr<objects::MiSkillData> skillData, uint32_t hpCost, uint32_t mpCost);
+        std::shared_ptr<objects::MiSkillData> skillData, int16_t hpCost, int16_t mpCost);
 
     /**
      * Notify the client that a skill is complete.

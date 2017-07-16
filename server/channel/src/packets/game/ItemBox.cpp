@@ -45,12 +45,6 @@
 
 using namespace channel;
 
-void SendItemBox(CharacterManager* characterManager,
-    const std::shared_ptr<ChannelClientConnection>& client, int64_t boxID)
-{
-    characterManager->SendItemBoxData(client, boxID);
-}
-
 bool Parsers::ItemBox::Parse(libcomp::ManagerPacket *pPacketManager,
     const std::shared_ptr<libcomp::TcpConnection>& connection,
     libcomp::ReadOnlyPacket& p) const
@@ -65,16 +59,19 @@ bool Parsers::ItemBox::Parse(libcomp::ManagerPacket *pPacketManager,
 
     auto server = std::dynamic_pointer_cast<ChannelServer>(pPacketManager->GetServer());
     auto client = std::dynamic_pointer_cast<ChannelClientConnection>(connection);
+    auto state = client->GetClientState();
+    auto characterManager = server->GetCharacterManager();
 
-    if(type == 0 && boxID == 0)
+    auto itemBox = characterManager->GetItemBox(state, type, boxID);
+    if(nullptr != itemBox)
     {
-        server->QueueWork(SendItemBox, server->GetCharacterManager(), client, boxID);
-    }
-    else
-    {
-        /// @todo
-        LOG_ERROR("Item box request sent for a non-inventory item box.\n");
-        return false;
+        server->QueueWork([](
+            CharacterManager* pCharacterManager,
+            const std::shared_ptr<ChannelClientConnection>& pClient,
+            const std::shared_ptr<objects::ItemBox>& pBox)
+        {
+            pCharacterManager->SendItemBoxData(pClient, pBox);
+        }, characterManager, client, itemBox);
     }
 
     return true;

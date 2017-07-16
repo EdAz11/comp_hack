@@ -31,9 +31,6 @@
 #include "DatabaseQuerySQLite3.h"
 #include "Log.h"
 
-// libobjgen Includes
-#include <MetaVariableString.h>
-
 // SQLite3 Includes
 #include <sqlite3.h>
 
@@ -133,7 +130,7 @@ bool DatabaseSQLite3::Setup(bool rebuild)
         LOG_ERROR("Database file was not created!\n");
     }
 
-    if(UsingDefaultDatabaseFile())
+    if(UsingDefaultDatabaseType())
     {
         std::list<std::unordered_map<std::string, std::vector<char>>> results;
         auto q = Prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'objects';");
@@ -170,6 +167,11 @@ bool DatabaseSQLite3::Use()
 {
     // Since each database is its own file there is nothing to do here.
     return true;
+}
+
+bool DatabaseSQLite3::TableHasRows(const String& table)
+{
+    return Database::TableHasRows(table.ToLower());
 }
 
 std::list<std::shared_ptr<PersistentObject>> DatabaseSQLite3::LoadObjects(
@@ -265,7 +267,7 @@ bool DatabaseSQLite3::InsertSingleObject(std::shared_ptr<PersistentObject>& obj)
     std::list<String> columnBinds;
     columnBinds.push_back(":UID");
 
-    auto values = obj->GetMemberBindValues();
+    auto values = obj->GetMemberBindValues(true);
 
     for(auto value : values)
     {
@@ -338,6 +340,11 @@ bool DatabaseSQLite3::UpdateSingleObject(std::shared_ptr<PersistentObject>& obj)
     }
 
     auto values = obj->GetMemberBindValues();
+    if(values.size() == 0)
+    {
+        //Nothing updated, nothing to do
+        return true;
+    }
 
     std::list<String> columnNames;
 
@@ -395,62 +402,47 @@ bool DatabaseSQLite3::UpdateSingleObject(std::shared_ptr<PersistentObject>& obj)
 
 bool DatabaseSQLite3::DeleteObjects(std::list<std::shared_ptr<PersistentObject>>& objs)
 {
-    std::shared_ptr<libobjgen::MetaObject> metaObject;
-
-    std::list<String> uidBindings;
+    std::unordered_map<std::shared_ptr<libobjgen::MetaObject>,
+        std::list<std::shared_ptr<PersistentObject>>> metaObjectMap;
     for(auto obj : objs)
     {
-        auto uuid = obj->GetUUID();
-
-        if(uuid.IsNull())
-        {
-            return false;
-        }
-
         auto metaObj = obj->GetObjectMetadata();
+        metaObjectMap[metaObj].push_back(obj);
+    }
 
-        if(nullptr == metaObject)
+    for(auto mPair : metaObjectMap)
+    {
+        auto metaObject = mPair.first;
+
+        std::list<String> uidBindings;
+        for(auto obj : mPair.second)
         {
-            metaObject = metaObj;
+            auto uuid = obj->GetUUID();
+            if(uuid.IsNull())
+            {
+                return false;
+            }
+
+            obj->Unregister();
+
+            std::string uuidStr = obj->GetUUID().ToString();
+            uidBindings.push_back(String("'%1'").Arg(uuidStr));
         }
-        else if(metaObject != metaObj)
+
+        if(!Execute(String("DELETE FROM %1 WHERE UID in (%2);")
+            .Arg(metaObject->GetName())
+            .Arg(String::Join(uidBindings, ", "))))
         {
             return false;
         }
-
-        std::string uuidStr = obj->GetUUID().ToString();
-
-        uidBindings.push_back(String("'%1'").Arg(uuidStr));
     }
 
-    if(Execute(String("DELETE FROM %1 WHERE UID in (%2);")
-        .Arg(metaObject->GetName())
-        .Arg(String::Join(uidBindings, ", "))))
-    {
-        for(auto obj : objs)
-        {
-            obj->Unregister();
-        }
-        return true;
-    }
-
-    return false;
+    return true;
 }
 
 bool DatabaseSQLite3::VerifyAndSetupSchema(bool recreateTables)
 {
-    auto databaseName = std::dynamic_pointer_cast<objects::DatabaseConfigSQLite3>(
-        mConfig)->GetDatabaseName();
-    std::vector<std::shared_ptr<libobjgen::MetaObject>> metaObjectTables;
-    for(auto registrar : PersistentObject::GetRegistry())
-    {
-        std::string source = registrar.second->GetSourceLocation();
-        if(source == databaseName || (source.length() == 0 && UsingDefaultDatabaseFile()))
-        {
-            metaObjectTables.push_back(registrar.second);
-        }
-    }
-
+    auto metaObjectTables = GetMappedObjects();
     if(metaObjectTables.size() == 0)
     {
         return true;
@@ -679,10 +671,234 @@ bool DatabaseSQLite3::VerifyAndSetupSchema(bool recreateTables)
     return true;
 }
 
-bool DatabaseSQLite3::UsingDefaultDatabaseFile()
+bool DatabaseSQLite3::ProcessStandardChangeSet(const std::shared_ptr<
+    DBStandardChangeSet>& changes)
 {
-    auto config = std::dynamic_pointer_cast<objects::DatabaseConfigSQLite3>(mConfig);
-    return config->GetDatabaseName() == config->GetDefaultDatabaseName();
+    libcomp::String transactionID = libcomp::String("_%1").Arg(
+            libcomp::String(libobjgen::UUID::Random().ToString()).Replace("-", "_"));
+    if(!Prepare(libcomp::String("BEGIN TRANSACTION %1").Arg(
+        transactionID)).Execute())
+    {
+        return false;
+    }
+
+    bool result = true;
+    for(auto obj : changes->GetInserts())
+    {
+        if(!InsertSingleObject(obj))
+        {
+            result = false;
+            break;
+        }
+    }
+    
+    if(result)
+    {
+        for(auto obj : changes->GetUpdates())
+        {
+            if(!UpdateSingleObject(obj))
+            {
+                result = false;
+                break;
+            }
+        }
+    }
+
+    auto deletes = changes->GetDeletes();
+    if(result && deletes.size())
+    {
+        result = DeleteObjects(deletes);
+    }
+
+    if(result)
+    {
+        if(!Prepare(libcomp::String("COMMIT TRANSACTION %1").Arg(
+            transactionID)).Execute())
+        {
+            return false;
+        }
+    }
+    else
+    {
+        if(!Prepare(libcomp::String("ROLLBACK TRANSACTION %1").Arg(
+            transactionID)).Execute())
+        {
+            // If this happens the server may need to be shut down
+            LOG_CRITICAL("Rollback failed!\n");
+            return false;
+        }
+    }
+
+    return result;
+}
+
+
+bool DatabaseSQLite3::ProcessOperationalChangeSet(const std::shared_ptr<
+    DBOperationalChangeSet>& changes)
+{
+    libcomp::String transactionID = libcomp::String("_%1").Arg(
+            libcomp::String(libobjgen::UUID::Random().ToString()).Replace("-", "_"));
+    if(!Prepare(libcomp::String("BEGIN TRANSACTION %1").Arg(
+        transactionID)).Execute())
+    {
+        return false;
+    }
+
+    bool result = true;
+    std::set<std::shared_ptr<libcomp::PersistentObject>> objs;
+    for(auto op : changes->GetOperations())
+    {
+        auto obj = op->GetRecord();
+        switch(op->GetType())
+        {
+        case DBOperationalChange::DBOperationType::DBOP_INSERT:
+            result &= InsertSingleObject(obj);
+            break;
+        case DBOperationalChange::DBOperationType::DBOP_UPDATE:
+            result &= UpdateSingleObject(obj);
+            break;
+        case DBOperationalChange::DBOperationType::DBOP_DELETE:
+            result &= DeleteSingleObject(obj);
+            break;
+        case DBOperationalChange::DBOperationType::DBOP_EXPLICIT:
+            objs.insert(obj);
+            result &= ProcessExplicitUpdate(
+                std::dynamic_pointer_cast<DBExplicitUpdate>(op));
+            break;
+        }
+
+        if(!result)
+        {
+            break;
+        }
+    }
+
+    if(result)
+    {
+        if(!Prepare(libcomp::String("COMMIT TRANSACTION %1").Arg(
+            transactionID)).Execute())
+        {
+            return false;
+        }
+    }
+    else
+    {
+        if(!Prepare(libcomp::String("ROLLBACK TRANSACTION %1").Arg(
+            transactionID)).Execute())
+        {
+            // If this happens the server may need to be shut down
+            LOG_CRITICAL("Rollback failed!\n");
+            return false;
+        }
+    }
+
+    for(auto obj : objs)
+    {
+        auto bind = new DatabaseBindUUID("UID", obj->GetUUID());
+        result = nullptr != LoadSingleObject(
+            libcomp::PersistentObject::GetTypeHashByName(
+            obj->GetObjectMetadata()->GetName(), result), bind);
+
+        if(!result)
+        {
+            break;
+        }
+    }
+
+    return result;
+}
+
+bool DatabaseSQLite3::ProcessExplicitUpdate(const std::shared_ptr<
+    DBExplicitUpdate>& update)
+{
+    auto obj = update->GetRecord();
+    auto expectedVals = update->GetExpectedValues();
+    auto changedVals = update->GetChanges();
+    if(changedVals.size() == 0)
+    {
+        return false;
+    }
+
+    size_t idx = 1;
+    std::list<String> updateClause;
+    std::list<String> whereClause;
+    // Bind the update clause values
+    for(auto cPair : changedVals)
+    {
+        auto it = expectedVals.find(cPair.first);
+        if(it == expectedVals.end())
+        {
+            return false;
+        }
+
+        updateClause.push_back(String("%1 = ?%2").Arg(cPair.first).Arg(idx++));
+    }
+
+    auto uidIdx = idx++;
+    
+    // Now bind the where clause values
+    for(auto cPair : changedVals)
+    {
+        whereClause.push_back(String("%1 = ?%2").Arg(cPair.first).Arg(idx++));
+    }
+
+    String sql = String("UPDATE `%1` SET %2 WHERE `UID` = :%3 AND %4;").Arg(
+        obj->GetObjectMetadata()->GetName()).Arg(
+        String::Join(updateClause, ", ")).Arg(uidIdx).Arg(
+        String::Join(whereClause, " AND "));
+
+    DatabaseQuery query = Prepare(sql);
+
+    if(!query.IsValid())
+    {
+        LOG_ERROR(String("Failed to prepare SQL query: %1\n").Arg(sql));
+        LOG_ERROR(String("Database said: %1\n").Arg(GetLastError()));
+
+        return false;
+    }
+
+    idx = 1;
+    for(auto cPair : changedVals)
+    {
+        if(!cPair.second->Bind(query, idx++))
+        {
+            LOG_ERROR(String("Failed to bind value: %1\n").Arg(
+                cPair.first));
+            LOG_ERROR(String("Database said: %1\n").Arg(GetLastError()));
+
+            return false;
+        }
+    }
+
+    if(!query.Bind(idx++, obj->GetUUID()))
+    {
+        LOG_ERROR("Failed to bind value: UID\n");
+        LOG_ERROR(String("Database said: %1\n").Arg(GetLastError()));
+
+        return false;
+    }
+    
+    for(auto cPair : changedVals)
+    {
+        if(!expectedVals[cPair.first]->Bind(query, idx++))
+        {
+            LOG_ERROR(String("Failed to bind where clause for value: %1\n").Arg(
+                cPair.first));
+            LOG_ERROR(String("Database said: %1\n").Arg(GetLastError()));
+
+            return false;
+        }
+    }
+
+    if(!query.Execute())
+    {
+        LOG_ERROR(String("Failed to execute query: %1\n").Arg(sql));
+        LOG_ERROR(String("Database said: %1\n").Arg(GetLastError()));
+
+        return false;
+    }
+
+    return query.AffectedRowCount() == 1;
 }
 
 String DatabaseSQLite3::GetFilepath() const

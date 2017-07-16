@@ -31,6 +31,7 @@
 
 // libcomp Includes
 #include <Decrypt.h>
+#include <ErrorCodes.h>
 #include <Log.h>
 #include <Packet.h>
 #include <PacketCodes.h>
@@ -39,8 +40,23 @@
 
 // object Includes
 #include <Account.h>
+#include <AccountLogin.h>
+#include <CharacterLogin.h>
 
 using namespace lobby;
+
+static bool LoginError(const std::shared_ptr<
+    libcomp::TcpConnection>& connection)
+{
+    /// @todo Return different error codes like an account is banned.
+    libcomp::Packet reply;
+    reply.WritePacketCode(LobbyToClientPacketCode_t::PACKET_AUTH);
+    reply.WriteS32Little(to_underlying(ErrorCodes_t::BAD_USERNAME_PASSWORD));
+
+    connection->SendPacket(reply);
+
+    return true;
+}
 
 static bool CompleteLogin(
     const std::shared_ptr<libcomp::TcpConnection>& connection,
@@ -65,9 +81,10 @@ static bool CompleteLogin(
             login = std::shared_ptr<objects::AccountLogin>(new objects::AccountLogin);
             login->SetAccount(account);
         }
-
-        login->SetWorldID(-1);
-        login->SetChannelID(-1);
+        else
+        {
+            login->SetCharacterLogin(std::make_shared<objects::CharacterLogin>());
+        }
 
         if(!accountManager->LoginUser(username, login))
         {
@@ -76,11 +93,13 @@ static bool CompleteLogin(
         }
     }
 
+    state(connection)->SetAuthenticated(true);
+
     libcomp::Packet reply;
     reply.WritePacketCode(LobbyToClientPacketCode_t::PACKET_AUTH);
 
     // Status code (see the Login handler for a list).
-    reply.WriteS32Little(0);
+    reply.WriteS32Little(to_underlying(ErrorCodes_t::SUCCESS));
 
     accountManager->UpdateSessionID(username, sid2);
 
@@ -126,7 +145,7 @@ static bool NoWebAuthParse(libcomp::ManagerPacket *pPacketManager,
         LOG_ERROR(libcomp::String("User '%1' password hash provided by the "
             "client was not valid: %2\n").Arg(username).Arg(hash));
         accountManager->LogoutUser(username, loginWorldID);
-        return false;
+        return LoginError(connection);
     }
 
     auto sids = sessionManager->GenerateSIDs(username);
@@ -136,7 +155,7 @@ static bool NoWebAuthParse(libcomp::ManagerPacket *pPacketManager,
         LOG_ERROR(libcomp::String("User '%1' session ID provided by the server"
             " was not valid: %2\n").Arg(username).Arg(sids.first));
         accountManager->LogoutUser(username, loginWorldID);
-        return false;
+        return LoginError(connection);
     }
 
     return CompleteLogin(connection, server, account, username, sid2,
@@ -173,7 +192,7 @@ bool Parsers::Auth::Parse(libcomp::ManagerPacket *pPacketManager,
         LOG_ERROR(libcomp::String("User '%1' session ID provided by the client"
             " was not valid: %2\n").Arg(username).Arg(sid));
         accountManager->LogoutUser(username, loginWorldID);
-        return false;
+        return LoginError(connection);
     }
 
     return CompleteLogin(connection, server, account, username, sid2,

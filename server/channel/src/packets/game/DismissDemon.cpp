@@ -34,6 +34,10 @@
 // channel Includes
 #include "ChannelServer.h"
 
+// objects Includes
+#include <CharacterProgress.h>
+#include <DemonBox.h>
+
 using namespace channel;
 
 void DemonDismiss(const std::shared_ptr<ChannelServer> server,
@@ -41,9 +45,10 @@ void DemonDismiss(const std::shared_ptr<ChannelServer> server,
     int64_t demonID)
 {
     auto state = client->GetClientState();
-    auto cState = state->GetCharacterState();
     auto dState = state->GetDemonState();
+    auto cState = state->GetCharacterState();
     auto character = cState->GetEntity();
+    auto progress = character->GetProgress();
     auto demon = std::dynamic_pointer_cast<objects::Demon>(
         libcomp::PersistentObject::GetObjectByUUID(state->GetObjectUUID(demonID)));
 
@@ -52,44 +57,31 @@ void DemonDismiss(const std::shared_ptr<ChannelServer> server,
         return;
     }
 
-    int8_t slot = -1;
-    for(size_t i = 0; i < 10; i++)
-    {
-        if(character->GetCOMP(i).Get() == demon)
-        {
-            slot = (int8_t)i;
-            break;
-        }
-    }
-
-    if(slot == -1)
-    {
-        return;
-    }
-
+    int8_t slot = demon->GetBoxSlot();
+    auto box = demon->GetDemonBox().Get();
+    uint8_t maxSlots = box == 0 ? progress->GetMaxCOMPSlots() : 50;
     if(dState->GetEntity() == demon)
     {
         server->GetCharacterManager()->StoreDemon(client);
     }
 
-    character->SetCOMP((size_t)slot, NULLUUID);
-
-    auto db = server->GetWorldDatabase();
-    if(!character->Update(db) || !demon->GetCoreStats()->Delete(db) ||
-        !demon->Delete(db))
-    {
-        return;
-    }
+    box->SetDemons((size_t)slot, NULLUUID);
 
     libcomp::Packet reply;
-    reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_COMP_SLOT_UPDATED);
+    reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_DEMON_BOX_UPDATE);
     reply.WriteS8(0);   //Unknown
 
     reply.WriteS32Little(1);    //Slots updated
-    server->GetCharacterManager()->GetCOMPSlotPacketData(reply, client, (size_t)slot);
-    reply.WriteS8(10);   //Total COMP slots
+    server->GetCharacterManager()->GetDemonPacketData(reply, client, box, slot);
+    reply.WriteS8((int8_t)maxSlots);
 
     client->SendPacket(reply);
+
+    auto dbChanges = libcomp::DatabaseChangeSet::Create(state->GetAccountUID());
+    dbChanges->Update(box);
+    dbChanges->Delete(demon->GetCoreStats().Get());
+    dbChanges->Delete(demon);
+    server->GetWorldDatabase()->QueueChangeSet(dbChanges);
 }
 
 bool Parsers::DismissDemon::Parse(libcomp::ManagerPacket *pPacketManager,

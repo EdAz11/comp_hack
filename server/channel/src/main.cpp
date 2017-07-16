@@ -29,24 +29,55 @@
 #include "ChannelServer.h"
 
 // libcomp Includes
+#include <Exception.h>
 #include <Log.h>
 #include <PersistentObject.h>
+#include <ServerCommandLineParser.h>
 #include <Shutdown.h>
 
 int main(int argc, const char *argv[])
 {
+    libcomp::Exception::RegisterSignalHandler();
+
     libcomp::Log::GetSingletonPtr()->AddStandardOutputHook();
 
     LOG_INFO("COMP_hack Channel Server v0.0.1 build 1\n");
     LOG_INFO("Copyright (C) 2010-2016 COMP_hack Team\n\n");
 
-    std::string configPath = libcomp::BaseServer::GetDefaultConfigPath() + "channel.xml";
+    std::string configPath = libcomp::BaseServer::GetDefaultConfigPath() +
+        "channel.xml";
 
-    if(argc == 2)
+    // Command line argument parser.
+    auto parser = std::make_shared<libcomp::ServerCommandLineParser>();
+
+    // Parse the command line arguments.
+    if(!parser->Parse(argc, argv))
     {
-        configPath = argv[1];
+        return EXIT_FAILURE;
+    }
+
+    auto arguments = parser->GetStandardArguments();
+
+    if(!arguments.empty())
+    {
+        configPath = arguments.front().ToUtf8();
+
         LOG_DEBUG(libcomp::String("Using custom config path "
             "%1\n").Arg(configPath));
+
+        size_t pos = configPath.find_last_of("\\/");
+        if(std::string::npos != pos)
+        {
+            libcomp::BaseServer::SetConfigPath(
+                configPath.substr(0, ((size_t)pos+1)));
+        }
+    }
+
+    auto config = std::make_shared<objects::ChannelConfig>();
+    if(!libcomp::BaseServer::ReadConfig(config, configPath))
+    {
+        LOG_WARNING("Failed to load the channel config file."
+            " Default values will be used.\n");
     }
 
     if(!libcomp::PersistentObject::Initialize())
@@ -55,9 +86,8 @@ int main(int argc, const char *argv[])
         return EXIT_FAILURE;
     }
 
-    auto config = std::make_shared<objects::ChannelConfig>();
     auto server = std::make_shared<channel::ChannelServer>(
-        argv[0], config, configPath);
+        argv[0], config, parser);
 
     if(!server->Initialize())
     {

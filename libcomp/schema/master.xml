@@ -2,21 +2,37 @@
 <objgen>
     <!-- test classes -->
     <include path="test.xml"/>
-    
+
     <!-- config classes -->
     <include path="databaseconfig.xml"/>
-    <include path="databaseconfig_cassandra.xml"/>
+    <include path="databaseconfig_mariadb.xml"/>
     <include path="databaseconfig_sqlite3.xml"/>
     <include path="serverconfig.xml"/>
-    
+
+    <!-- command line option classes -->
+    <include path="server_command_line.xml"/>
+
     <!-- common classes -->
     <include path="account.xml"/>
     <include path="accountlogin.xml"/>
     <include path="action.xml"/>
+    <include path="action_startevent.xml"/>
     <include path="action_zonechange.xml"/>
     <include path="character.xml"/>
     <include path="demon.xml"/>
+    <include path="enemy.xml"/>
+    <include path="event.xml"/>
+    <include path="event_direction.xml"/>
+    <include path="event_getitem.xml"/>
+    <include path="event_homepoint.xml"/>
+    <include path="event_message.xml"/>
+    <include path="event_openmenu.xml"/>
+    <include path="event_performactions.xml"/>
+    <include path="event_playscene.xml"/>
+    <include path="event_prompt.xml"/>
+    <include path="event_stageeffect.xml"/>
     <include path="item.xml"/>
+    <include path="partymember.xml"/>
     <include path="registeredchannel.xml"/>
     <include path="registeredworld.xml"/>
 
@@ -28,6 +44,7 @@
     <!-- Server Files -->
     <include path="server_npc.xml"/>
     <include path="server_object.xml"/>
+    <include path="server_shop.xml"/>
     <include path="server_zone.xml"/>
 
     <!-- BinaryData Files -->
@@ -41,7 +58,9 @@
     <include path="binarydata/itemdata.xml"/>
     <include path="binarydata/onpcdata.xml"/>
     <include path="binarydata/shared.xml"/>
+    <include path="binarydata/shopproductdata.xml"/>
     <include path="binarydata/skilldata.xml"/>
     <include path="binarydata/spotdata.xml"/>
+    <include path="binarydata/statusdata.xml"/>
     <include path="binarydata/zonedata.xml"/>
 </objgen>

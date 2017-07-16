@@ -28,8 +28,13 @@
 #define SERVER_CHANNEL_SRC_ZONE_H
 
 // channel Includes
+#include "ActiveEntityState.h"
 #include "ChannelClientConnection.h"
+#include "EnemyState.h"
 #include "EntityState.h"
+
+// Standard C++11 includes
+#include <map>
 
 namespace objects
 {
@@ -84,15 +89,19 @@ public:
     void RemoveConnection(const std::shared_ptr<ChannelClientConnection>& client);
 
     /**
-     * Add an NPC to the zone. This is not thread safe and should only be
-     * called before the zone is being used.
+     * Add an enemy to the zone
+     * @param enemy Pointer to the enemy to add
+     */
+    void AddEnemy(const std::shared_ptr<EnemyState>& enemy);
+
+    /**
+     * Add an NPC to the zone
      * @param npc Pointer to the NPC to add
      */
     void AddNPC(const std::shared_ptr<NPCState>& npc);
 
     /**
-     * Add an object to the zone. This is not thread safe and should only be
-     * called before the zone is being used.
+     * Add an object to the zone
      * @param object Pointer to the object to add
      */
     void AddObject(const std::shared_ptr<ServerObjectState>& object);
@@ -118,6 +127,19 @@ public:
      * @return Pointer to the entity instance.
      */
     std::shared_ptr<objects::EntityStateObject> GetEntity(int32_t id);
+
+    /**
+     * Get an enemy instance by it's ID.
+     * @param id Instance ID of the enemy.
+     * @return Pointer to the enemy instance.
+     */
+    std::shared_ptr<EnemyState> GetEnemy(int32_t id);
+
+    /**
+     * Get all enemy instances in the zone
+     * @return List of all enemy instances in the zone
+     */
+    const std::list<std::shared_ptr<EnemyState>> GetEnemies() const;
 
     /**
      * Get an NPC instance by it's ID.
@@ -151,6 +173,30 @@ public:
      */
     const std::shared_ptr<objects::ServerZone> GetDefinition();
 
+    /**
+     * Set the next status effect event time associated to an entity
+     * in the zone
+     * @param time Time of the next status effect event time
+     * @param entityID ID of the entity with a status effect event
+     *  at the specified time
+     */
+    void SetNextStatusEffectTime(uint32_t time, int32_t entityID);
+
+    /**
+     * Get the list of entities that have had registered status effect
+     * event times that have passed since the specified time
+     * @param now System time representing the current server time
+     * @return List of entities that have had registered status effect
+     *  event times that have passed
+     */
+    std::list<std::shared_ptr<ActiveEntityState>>
+        GetUpdatedStatusEffectEntities(uint32_t now);
+
+    /**
+     * Perform pre-deletion cleanup actions
+     */
+    void Cleanup();
+
 private:
     /**
      * Register an entity as one that currently exists in the zone
@@ -170,6 +216,9 @@ private:
     /// Map of primarty entity IDs to client connections
     std::unordered_map<int32_t, std::shared_ptr<ChannelClientConnection>> mConnections;
 
+    /// List of pointers to enemies instantiated for the zone
+    std::list<std::shared_ptr<EnemyState>> mEnemies;
+
     /// List of pointers to NPCs instantiated for the zone
     std::list<std::shared_ptr<NPCState>> mNPCs;
 
@@ -178,6 +227,10 @@ private:
 
     /// Map of entities in the zone by their ID
     std::unordered_map<int32_t, std::shared_ptr<objects::EntityStateObject>> mAllEntities;
+
+    /// Map of system times to active entities with status effects that need
+    /// handling at that time
+    std::map<uint32_t, std::set<int32_t>> mNextEntityStatusTimes;
 
     /// Unique instance ID of the zone
     uint32_t mID;

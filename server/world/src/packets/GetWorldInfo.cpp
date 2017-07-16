@@ -27,7 +27,7 @@
 #include "Packets.h"
 
 // libcomp Includes
-#include <DatabaseConfigCassandra.h>
+#include <DatabaseConfigMariaDB.h>
 #include <DatabaseConfigSQLite3.h>
 #include <Decrypt.h>
 #include <Log.h>
@@ -58,9 +58,9 @@ bool Parsers::GetWorldInfo::Parse(libcomp::ManagerPacket *pPacketManager,
         std::shared_ptr<objects::DatabaseConfig> dbConfig;
         switch(databaseType)
         {
-            case objects::ServerConfig::DatabaseType_t::CASSANDRA:
+            case objects::ServerConfig::DatabaseType_t::MARIADB:
                 dbConfig = std::shared_ptr<objects::DatabaseConfig>(
-                    new objects::DatabaseConfigCassandra);
+                    new objects::DatabaseConfigMariaDB);
                 break;
             case objects::ServerConfig::DatabaseType_t::SQLITE3:
                 dbConfig = std::shared_ptr<objects::DatabaseConfig>(
@@ -113,12 +113,15 @@ bool Parsers::GetWorldInfo::Parse(libcomp::ManagerPacket *pPacketManager,
         {
             auto nextChannelID = server->GetNextChannelID();
             reply.WriteU8(nextChannelID);
+
+            bool otherChannelsExist = server->GetChannels().size() > 1;
+            reply.WriteU8(otherChannelsExist ? 1 : 0);
         }
     
         switch(databaseType)
         {
-            case objects::ServerConfig::DatabaseType_t::CASSANDRA:
-                config->GetCassandraConfig()->SavePacket(reply, false);
+            case objects::ServerConfig::DatabaseType_t::MARIADB:
+                config->GetMariaDBConfig()->SavePacket(reply, false);
                 break;
             case objects::ServerConfig::DatabaseType_t::SQLITE3:
                 config->GetSQLite3Config()->SavePacket(reply, false);

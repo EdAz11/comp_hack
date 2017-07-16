@@ -60,13 +60,21 @@ void SaveHotbarItems(const std::shared_ptr<ChannelServer> server,
     auto character = state->GetCharacterState()->GetEntity();
     auto hotbar = character->GetHotbars(page).Get();
 
+    auto dbChanges = libcomp::DatabaseChangeSet::Create(
+        state->GetAccountUID());
     if(nullptr == hotbar)
     {
         hotbar = libcomp::PersistentObject::New<objects::Hotbar>();
         hotbar->SetCharacter(character);
         hotbar->Register(hotbar);
-        hotbar->Insert(server->GetWorldDatabase());
         character->SetHotbars(page, hotbar);
+
+        dbChanges->Update(character);
+        dbChanges->Insert(hotbar);
+    }
+    else
+    {
+        dbChanges->Update(hotbar);
     }
 
     for(size_t i = 0; i < 16; i++)
@@ -94,6 +102,8 @@ void SaveHotbarItems(const std::shared_ptr<ChannelServer> server,
     reply.WriteS32(0);
 
     client->SendPacket(reply);
+
+    server->GetWorldDatabase()->QueueChangeSet(dbChanges);
 }
 
 bool Parsers::HotbarSave::Parse(libcomp::ManagerPacket *pPacketManager,

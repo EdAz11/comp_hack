@@ -68,10 +68,14 @@ bool Parsers::FixObjectPosition::Parse(libcomp::ManagerPacket *pPacketManager,
     ServerTime stopTime = state->ToServerTime(stop);
 
     // Stop using the current rotation value
-    eState->SetOriginRotation(eState->GetDestinationRotation());
+    eState->RefreshCurrentPosition(server->GetServerTime());
+    float rot = eState->GetCurrentRotation();
+    eState->SetDestinationRotation(rot);
 
     eState->SetDestinationX(destX);
+    eState->SetCurrentX(destX);
     eState->SetDestinationY(destY);
+    eState->SetCurrentY(destY);
 
     eState->SetDestinationTicks(stopTime);
 
@@ -88,7 +92,8 @@ bool Parsers::FixObjectPosition::Parse(libcomp::ManagerPacket *pPacketManager,
     if(nullptr != dState)
     {
         // If a demon is being placed, it will have already been described to the
-        // the client by this point so show it now.
+        // the client by this point so create and show it now.
+        server->GetZoneManager()->PopEntityForZoneProduction(client, dState->GetEntityID(), 2);
         server->GetZoneManager()->ShowEntityToZone(client, dState->GetEntityID());
     }
 

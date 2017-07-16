@@ -205,6 +205,8 @@ std::string MetaVariableMap::GetLoadCode(const Generator& generator,
             replacements["@VAR_VALUE_TYPE@"] = mValueElementType->GetCodeType();
             replacements["@VAR_VALUE_LOAD_CODE@"] = valueCode;
             replacements["@STREAM@"] = stream;
+            replacements["@PERSIST_COPY@"] =
+                generator.GetPersistentRefCopyCode(mValueElementType, name);
 
             code = generator.ParseTemplate(0, "VariableMapLoad",
                 replacements);
@@ -265,6 +267,8 @@ std::string MetaVariableMap::GetLoadRawCode(const Generator& generator,
             replacements["@VAR_VALUE_TYPE@"] = mValueElementType->GetCodeType();
             replacements["@VAR_VALUE_LOAD_CODE@"] = valueCode;
             replacements["@STREAM@"] = stream;
+            replacements["@PERSIST_COPY@"] =
+                generator.GetPersistentRefCopyCode(mValueElementType, name);
 
             code = generator.ParseTemplate(0, "VariableMapLoadRaw",
                 replacements);
@@ -398,6 +402,8 @@ std::string MetaVariableMap::GetAccessFunctions(const Generator& generator,
         replacements["@VAR_VALUE_ARG_TYPE@"] = mValueElementType->GetArgumentType();
         replacements["@OBJECT_NAME@"] = object.GetName();
         replacements["@VAR_CAMELCASE_NAME@"] = generator.GetCapitalName(*this);
+        replacements["@PERSISTENT_CODE@"] = object.IsPersistent() ?
+            ("mDirtyFields.insert(\"" + GetName() + "\");") : "";
 
         ss << std::endl << generator.ParseTemplate(0, "VariableMapAccessFunctions",
             replacements) << std::endl;

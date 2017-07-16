@@ -27,7 +27,7 @@
 #include "Packets.h"
 
 // libcomp Includes
-#include <DatabaseConfigCassandra.h>
+#include <DatabaseConfigMariaDB.h>
 #include <DatabaseConfigSQLite3.h>
 #include <Decrypt.h>
 #include <Log.h>
@@ -36,6 +36,9 @@
 #include <PacketCodes.h>
 #include <ReadOnlyPacket.h>
 #include <TcpConnection.h>
+
+// object Includes
+#include <ChannelConfig.h>
 
 // channel Includes
 #include "ChannelServer.h"
@@ -51,9 +54,9 @@ std::shared_ptr<libcomp::Database> ParseDatabase(const std::shared_ptr<ChannelSe
     std::shared_ptr<objects::DatabaseConfig> dbConfig;
     switch(databaseType)
     {
-        case objects::ServerConfig::DatabaseType_t::CASSANDRA:
+        case objects::ServerConfig::DatabaseType_t::MARIADB:
             dbConfig = std::shared_ptr<objects::DatabaseConfig>(
-                new objects::DatabaseConfigCassandra);
+                new objects::DatabaseConfigMariaDB);
             break;
         case objects::ServerConfig::DatabaseType_t::SQLITE3:
             dbConfig = std::shared_ptr<objects::DatabaseConfig>(
@@ -88,8 +91,10 @@ bool SetWorldInfoFromPacket(libcomp::ManagerPacket *pPacketManager,
 
     auto worldID = p.ReadU8();
     auto channelID = p.ReadU8();
+    auto otherChannelsExist = p.ReadU8() == 1;
 
     auto server = std::dynamic_pointer_cast<ChannelServer>(pPacketManager->GetServer());
+    auto conf = std::dynamic_pointer_cast<objects::ChannelConfig>(server->GetConfig());
     auto worldDatabase = ParseDatabase(server, p);
     if(nullptr == worldDatabase)
     {
@@ -126,6 +131,11 @@ bool SetWorldInfoFromPacket(libcomp::ManagerPacket *pPacketManager,
         return false;
     }
 
+    if(otherChannelsExist)
+    {
+        server->LoadAllRegisteredChannels();
+    }
+
     //Reply with the channel information
     libcomp::Packet reply;
 
@@ -134,6 +144,15 @@ bool SetWorldInfoFromPacket(libcomp::ManagerPacket *pPacketManager,
     reply.WriteU8(server->GetRegisteredChannel()->GetID());
 
     connection->SendPacket(reply);
+
+    // Now that we've connected to the world successfully, hit the first server tick
+    // to start the main loop in addition to any recurring scheduled work
+    server->Tick();
+
+    if(conf->GetTimeout() > 0)
+    {
+        server->GetManagerConnection()->ScheduleClientTimeoutHandler(conf->GetTimeout());
+    }
 
     return true;
 }

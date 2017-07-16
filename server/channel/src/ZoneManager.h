@@ -79,20 +79,25 @@ public:
      * Associate a client connection to a zone
      * @param client Client connection to connect to a zone
      * @param zoneID Definition ID of a zone to add the client to
-     * @param xCoord x-coordinate to send character to.
-     * @param yCoord y-coordinate to send character to.
-     * @param rotation character rotation.
+     * @param xCoord X-coordinate to send character to.
+     * @param yCoord Y-coordinate to send character to.
+     * @param rotation Character rotation upon entering the zone.
+     * @param forceLeave Optional param that when set to true will force
+     *  a call to LeaveZone even if the zone they are moving to is the same
      * @return true if the client entered the zone properly, false if they
      *  did not
      */
     bool EnterZone(const std::shared_ptr<ChannelClientConnection>& client,
-        uint32_t zoneID, float xCoord, float yCoord, float rotation);
+        uint32_t zoneID, float xCoord, float yCoord, float rotation,
+        bool forceLeave = false);
 
     /**
      * Remove a client connection from a zone
      * @param client Client connection to remove from any associated zone
+     * @param logOut If true, special logout actions will be performed
      */
-    void LeaveZone(const std::shared_ptr<ChannelClientConnection>& client);
+    void LeaveZone(const std::shared_ptr<ChannelClientConnection>& client,
+        bool logOut);
 
     /**
      * Send data about entities that exist in a zone to a new connection and
@@ -119,6 +124,27 @@ public:
      */
     void ShowEntityToZone(const std::shared_ptr<
         ChannelClientConnection>& client, int32_t entityID);
+
+    /**
+     * Tell the game client to prepare an entity for display.
+     * @param client Pointer to the client connection
+     * @param entityID ID of the entity to prep
+     * @param type Client-side entity type identifier
+     * @param queue true if the message should be queued, false if
+     *  it should send right away
+     */
+    void PopEntityForProduction(const std::shared_ptr<
+        ChannelClientConnection>& client, int32_t entityID, int32_t type, bool queue = false);
+
+    /**
+     * Tell all game clients to prepare an entity for display.
+     * @param client Pointer to the client connection with an entity
+     *  to prep to other clients in the same zone
+     * @param entityID ID of the entity to prep
+     * @param type Client-side entity type identifier
+     */
+    void PopEntityForZoneProduction(const std::shared_ptr<
+        ChannelClientConnection>& client, int32_t entityID, int32_t type);
 
     /**
      * Tell all game clients in a zone to remove an entity.
@@ -150,14 +176,75 @@ public:
     /**
      * Get a list of client connections in the zone
      * @param client Client connection to use as the "source" connection
-     * @return List of client connections in the zone
      * @param includeSelf Optional parameter to include the connection being passed
      *  in as part of the return set. Defaults to true
+     * @return List of client connections in the zone
      */
     std::list<std::shared_ptr<ChannelClientConnection>> GetZoneConnections(
         const std::shared_ptr<ChannelClientConnection>& client,
         bool includeSelf = true);
+
+    /**
+     * Spawn an enemy in the specified zone instance at set coordinates
+     * @param zone Pointer to the zone instance where the enemy should be spawned
+     * @param demonID Demon/enemy type ID to spawn
+     * @param x X coordinate to render the enemy at
+     * @param y Y coordinate to render the enemy at
+     * @param rot Rotation to render the enemy with
+     * @param aiType Optional parameter to specify the type of AI
+     *  script to bind to the enemy by its type name
+     * @return true if the enemy was spawned, false if it was not
+     */
+    bool SpawnEnemy(const std::shared_ptr<Zone>& zone, uint32_t demonID, float x,
+        float y, float rot, const libcomp::String& aiType = "default");
+
+    /**
+     * Updates the current states of entities in the zone.  Enemy AI is
+     * processed from here as well as updating the current state of moving
+     * entities.
+     */
+    void UpdateActiveZoneStates();
+
+    /**
+     * Warp an entity to the specified location immediately.
+     * @param client Pointer to the client connection to use for gathering zone
+     *  information
+     * @param eState Pointer to the state of the entity being warped
+     * @param xPos X coordinate to warp the entity to
+     * @param yPos Y coordinate to warp the entity to
+     * @param rot Rotation to set at the target coordinates
+     */
+    void Warp(const std::shared_ptr<ChannelClientConnection>& client,
+        const std::shared_ptr<ActiveEntityState>& eState, float xPos, float yPos,
+        float rot);
+
 private:
+    /**
+     * Send entity information about an enemy in a zone
+     * @param client Pointer to the client connection to send to or use as
+     *  an identifier for the zone to send to
+     * @param enemyState Enemy state to use to report enemy data to the clients
+     * @param zone Pointer to the zone instance where the enemy exists
+     * @param sendToAll true if all clients in the zone should be sent the data
+     *  false if just the supplied client should be sent to
+     * @param queue true if the message should be queued, false if
+     *  it should send right away
+     */
+    void SendEnemyData(const std::shared_ptr<ChannelClientConnection>& client,
+        const std::shared_ptr<EnemyState>& enemyState,
+        const std::shared_ptr<Zone>& zone, bool sendToAll, bool queue = false);
+
+    /**
+     * Update the state of status effects in the supplied zone, adding
+     * and updating existing effects, expiring old effects and applying
+     * T-damage and regen to entities with applicable affects
+     * @param zone Pointer to the zone to update status effects for
+     * @param now System time representing the current server time to use
+     *  for event checking
+     */
+    void UpdateStatusEffectStates(const std::shared_ptr<Zone>& zone,
+        uint32_t now);
+
     /**
      * Send a packet to every connection in the specified zone
      * @param zone Pointer to the zone to send the packet to

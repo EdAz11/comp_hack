@@ -42,6 +42,7 @@
 
 // world Includes
 #include "AccountManager.h"
+#include "CharacterManager.h"
 
 namespace world
 {
@@ -54,10 +55,10 @@ public:
      * @param szProgram First command line argument for the application.
      * @param config Pointer to a casted WorldConfig that will contain properties
      *   every server has in addition to world specific ones.
-     * @param configPath File path to the location of the config to be loaded.
      */
-    WorldServer(const char *szProgram, std::shared_ptr<
-        objects::ServerConfig> config, const libcomp::String& configPath);
+    WorldServer(const char *szProgram,
+        std::shared_ptr<objects::ServerConfig> config,
+        std::shared_ptr<libcomp::ServerCommandLineParser> commandLine);
 
     /**
      * Clean up the server.
@@ -94,6 +95,21 @@ public:
      */
     std::shared_ptr<objects::RegisteredChannel> GetChannel(
         const std::shared_ptr<libcomp::InternalConnection>& connection) const;
+
+    /**
+     * Get channel connection associated to the specified ID.
+     * @param channelID ID of the channel to retrieve
+     * @return Pointer to the channel connnection
+     */
+    std::shared_ptr<libcomp::InternalConnection> GetChannelConnectionByID(
+        int8_t channelID) const;
+
+    /**
+     * Get all channels by connection.
+     * @return Map of channels by connection
+     */
+    std::map<std::shared_ptr<libcomp::InternalConnection>,
+        std::shared_ptr<objects::RegisteredChannel>> GetChannels() const;
 
     /**
      * Get the next channel ID to use for connecting channels.
@@ -159,6 +175,12 @@ public:
      */
     AccountManager* GetAccountManager();
 
+    /**
+     * Get the character manager for the server.
+     * @return Character manager for the server.
+     */
+    CharacterManager* GetCharacterManager();
+
 protected:
     /**
      * Create a connection to a newly active socket.
@@ -181,11 +203,14 @@ protected:
     std::map<std::shared_ptr<libcomp::InternalConnection>,
         std::shared_ptr<objects::RegisteredChannel>> mRegisteredChannels;
 
-    /// Pointer to the manager in charge of connection messages. 
+    /// Pointer to the manager in charge of connection messages.
     std::shared_ptr<ManagerConnection> mManagerConnection;
 
     /// Account manager for the server.
     AccountManager mAccountManager;
+
+    /// Character manager for the server.
+    CharacterManager* mCharacterManager;
 };
 
 } // namespace world

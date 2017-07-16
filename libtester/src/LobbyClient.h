@@ -28,6 +28,7 @@
 #define LIBTESTER_SRC_LOBBYCLIENT_H
 
 // libcomp Includes
+#include <ErrorCodes.h>
 #include <LobbyConnection.h>
 #include <PacketCodes.h>
 
@@ -61,6 +62,9 @@ public:
     bool WaitEncrypted(double& waitTime, asio::steady_timer::duration timeout =
         DEFAULT_TIMEOUT);
 
+    bool WaitForDisconnect(double& waitTime,
+        asio::steady_timer::duration timeout = DEFAULT_TIMEOUT);
+
     bool WaitForPacket(LobbyToClientPacketCode_t code,
         libcomp::ReadOnlyPacket& p, double& waitTime,
         asio::steady_timer::duration timeout = DEFAULT_TIMEOUT);
@@ -72,6 +76,15 @@ public:
     void ClearMessages();
 
     std::shared_ptr<libcomp::LobbyConnection> GetConnection();
+
+    void Login(const libcomp::String& username,
+        const libcomp::String& password, ErrorCodes_t loginErrorCode =
+            ErrorCodes_t::SUCCESS, ErrorCodes_t authErrorCode =
+            ErrorCodes_t::SUCCESS, uint32_t clientVersion = 0);
+    void WebLogin(const libcomp::String& username,
+        const libcomp::String& password = libcomp::String(),
+        const libcomp::String& sid = libcomp::String(),
+        bool expectError = false);
 
 private:
     bool HasDisconnectOrTimeout();
@@ -85,6 +98,8 @@ private:
         libcomp::Message::Message*>> mMessageQueue;
 
     MessageList mReceivedMessages;
+
+    libcomp::String mSID1, mSID2;
 };
 
 } // namespace libtester

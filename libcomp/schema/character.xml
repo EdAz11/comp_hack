@@ -23,12 +23,17 @@
         <!-- Character specific attributes -->
         <member type="s16" name="LNC" caps="true" min="-10000" max="10000"/>
         <member type="s32" name="Points"/>
+        <member type="DemonBox*" name="COMP" caps="true"/>
         <member type="Demon*" name="ActiveDemon"/>
+        <member type="u32" name="HomepointZone"/>
+        <member type="float" name="HomepointX"/>
+        <member type="float" name="HomepointY"/>
+        <member type="u32" name="LogoutZone"/>
+        <member type="float" name="LogoutX"/>
+        <member type="float" name="LogoutY"/>
+        <member type="float" name="LogoutRotation"/>
 
         <!-- Collections -->
-        <member type="array" name="COMP" caps="true" size="10">
-            <element type="Demon*"/>
-        </member>
         <member type="list" name="LearnedSkills">
             <element type="u32"/>
         </member>
@@ -58,6 +63,7 @@
         <!-- Sub-sections -->
         <member type="EntityStats*" name="CoreStats"/>
         <member type="CharacterProgress*" name="Progress"/>
+        <member type="FriendSettings*" name="FriendSettings"/>
     </object>
     <object name="EntityStats" location="world">
         <member type="ref" name="Entity" key="true" unique="true"/>
@@ -83,11 +89,12 @@
     <object name="StatusEffect" location="world">
         <member type="u32" name="Effect"/>
         <member type="ref" name="Entity" key="true" unique="false"/>
-        <member type="u64" name="Duration"/>
+        <member type="u32" name="Expiration"/>
         <member type="u8" name="Stack"/>
     </object>
     <object name="CharacterProgress" location="world">
         <member type="Character*" name="Character" key="true" unique="true"/>
+        <member type="u8" name="MaxCOMPSlots" default="6"/>
         <member type="array" name="Maps" size="32">
             <element type="u8"/>
         </member>
@@ -100,7 +107,7 @@
         <member type="array" name="DevilBook" size="512">
             <element type="u8"/>
         </member>
-        <member type="array" name="CompletedQuests" size="512">
+        <member type="array" name="CompletedQuests" size="128">
             <element type="u8"/>
         </member>
     </object>
@@ -124,11 +131,19 @@
         </member>
     </object>
     <object name="Quest" location="world">
-        <member type="u16" name="QuestID"/>
+        <member type="s16" name="QuestID"/>
         <member type="Character*" name="Character" key="true" unique="false"/>
-        <member type="u8" name="State"/>
-        <member type="list" name="CustomData">
+        <member type="s8" name="State"/>
+        <member type="array" name="CustomData" size="8">
             <element type="s32"/>
         </member>
+    </object>
+    <object name="FriendSettings" location="world">
+        <member type="Character*" name="Character" key="true" unique="true"/>
+        <member type="string" name="FriendMessage"/>
+        <member type="list" name="Friends">
+            <element type="ref"/>
+        </member>
+        <member type="bool" name="PublicToZone" default="true"/>
     </object>
 </objgen>

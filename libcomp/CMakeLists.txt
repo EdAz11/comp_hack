@@ -30,8 +30,6 @@ GENERATE_DOCS(doc/Doxyfile.in)
 # Add a directory to put the objgen output into.
 FILE(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/objgen)
 
-ADD_DEFINITIONS(${SQRAT_DEFINES})
-
 SET(SYSTEM_LIBRARIES "")
 
 IF(BSD)
@@ -41,6 +39,7 @@ SET(SYSTEM_LIBRARIES ${SYSTEM_LIBRARIES} ${EXECINFO_LIBRARY})
 ENDIF(BSD)
 
 SET(${PROJECT_NAME}_SRCS
+    src/ArgumentParser.cpp
     src/BaseServer.cpp
     src/ChannelConnection.cpp
     src/Compress.cpp
@@ -48,9 +47,10 @@ SET(${PROJECT_NAME}_SRCS
     src/CString.cpp
     src/Database.cpp
     src/DatabaseBind.cpp
-    src/DatabaseCassandra.cpp
+    src/DatabaseChangeSet.cpp
+    src/DatabaseMariaDB.cpp
     src/DatabaseQuery.cpp
-    src/DatabaseQueryCassandra.cpp
+    src/DatabaseQueryMariaDB.cpp
     src/DatabaseQuerySQLite3.cpp
     src/DatabaseSQLite3.cpp
     src/DataFile.cpp
@@ -85,6 +85,7 @@ SET(${PROJECT_NAME}_SRCS
     src/ReadOnlyPacket.cpp
     src/RingBuffer.cpp
     src/ScriptEngine.cpp
+    src/ServerCommandLineParser.cpp
     src/ServerDataManager.cpp
     src/Shutdown.cpp
     #src/Structgen.cpp
@@ -93,6 +94,17 @@ SET(${PROJECT_NAME}_SRCS
     #src/ThreadManager.cpp
     src/Worker.cpp
 )
+
+IF(NOT WIN32)
+    SET(${PROJECT_NAME}_SRCS
+        ${${PROJECT_NAME}_SRCS}
+        # for comp_manager and testing.
+        src/Child.cpp
+        src/DayCare.cpp
+        src/SpawnThread.cpp
+        src/WatchThread.cpp
+    )
+ENDIF(NOT WIN32)
 
 IF(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/ConfigCustom.cpp)
     SET(${PROJECT_NAME}_SRCS ${${PROJECT_NAME}_SRCS} src/ConfigCustom.cpp)
@@ -103,6 +115,7 @@ ENDIF()
 # This is a list of all header files. Adding the header files here ensures they
 # are listed in the source files for IDE projects.
 SET(${PROJECT_NAME}_HDRS
+    src/ArgumentParser.h
     src/BaseServer.h
     src/ChannelConnection.h
     src/Compress.h
@@ -112,9 +125,10 @@ SET(${PROJECT_NAME}_HDRS
     src/CString.h
     src/Database.h
     src/DatabaseBind.h
-    src/DatabaseCassandra.h
+    src/DatabaseChangeSet.h
+    src/DatabaseMariaDB.h
     src/DatabaseQuery.h
-    src/DatabaseQueryCassandra.h
+    src/DatabaseQueryMariaDB.h
     src/DatabaseQuerySQLite3.h
     src/DatabaseSQLite3.h
     src/DataFile.h
@@ -145,6 +159,7 @@ SET(${PROJECT_NAME}_HDRS
     src/MessagePong.h
     src/MessageQueue.h
     src/MessageShutdown.h
+    src/MessageTick.h
     src/MessageTimeout.h
     src/MessageWorldNotification.h
     src/Object.h
@@ -164,6 +179,7 @@ SET(${PROJECT_NAME}_HDRS
     src/ReadOnlyPacket.h
     src/RingBuffer.h
     src/ScriptEngine.h
+    src/ServerCommandLineParser.h
     src/ServerDataManager.h
     src/Shutdown.h
     src/TcpConnection.h
@@ -180,22 +196,50 @@ SET(${PROJECT_NAME}_HDRS
     src/PopIgnore.h
 )
 
+IF(NOT WIN32)
+    SET(${PROJECT_NAME}_HDRS
+        ${${PROJECT_NAME}_HDRS}
+        # for comp_manager and testing.
+        src/Child.h
+        src/DayCare.h
+        src/SpawnThread.h
+        src/WatchThread.h
+    )
+ENDIF(NOT WIN32)
+
 SET(${PROJECT_NAME}_SCHEMA
     schema/account.xml
     schema/accountlogin.xml
     schema/action.xml
+    schema/action_startevent.xml
     schema/action_zonechange.xml
     schema/character.xml
     schema/databaseconfig.xml
-    schema/databaseconfig_cassandra.xml
+    schema/databaseconfig_mariadb.xml
     schema/databaseconfig_sqlite3.xml
+    schema/demon.xml
+    schema/enemy.xml
+    schema/event.xml
+    schema/event_direction.xml
+    schema/event_getitem.xml
+    schema/event_homepoint.xml
+    schema/event_message.xml
+    schema/event_openmenu.xml
+    schema/event_performactions.xml
+    schema/event_playscene.xml
+    schema/event_prompt.xml
+    schema/event_stageeffect.xml
+    schema/item.xml
     schema/packet_login.xml
     schema/packet_login_reply.xml
     schema/packet_response_code.xml
+    schema/partymember.xml
     schema/registeredchannel.xml
     schema/registeredworld.xml
+    schema/server_command_line.xml
     schema/server_npc.xml
     schema/server_object.xml
+    schema/server_shop.xml
     schema/server_zone.xml
     schema/serverconfig.xml
     schema/test.xml
@@ -211,8 +255,10 @@ SET(${PROJECT_NAME}_SCHEMA
     schema/binarydata/itemdata.xml
     schema/binarydata/onpcdata.xml
     schema/binarydata/shared.xml
+    schema/binarydata/shopproductdata.xml
     schema/binarydata/skilldata.xml
     schema/binarydata/spotdata.xml
+    schema/binarydata/statusdata.xml
     schema/binarydata/zonedata.xml
 )
 
@@ -237,24 +283,68 @@ OBJGEN_XML(${PROJECT_NAME}_STRUCTS
     AccountWorldData.cpp
     Action.h
     Action.cpp
+    ActionStartEvent.h
+    ActionStartEvent.cpp
     ActionZoneChange.h
     ActionZoneChange.cpp
     Character.h
     Character.cpp
+    CharacterLogin.h
+    CharacterLogin.cpp
     CharacterProgress.h
     CharacterProgress.cpp
     DatabaseConfig.h
     DatabaseConfig.cpp
-    DatabaseConfigCassandra.h
-    DatabaseConfigCassandra.cpp
+    DatabaseConfigMariaDB.h
+    DatabaseConfigMariaDB.cpp
     DatabaseConfigSQLite3.h
     DatabaseConfigSQLite3.cpp
     Demon.h
     Demon.cpp
+    DemonBox.h
+    DemonBox.cpp
+    Enemy.h
+    Enemy.cpp
     EntityStats.h
     EntityStats.cpp
+    Event.h
+    Event.cpp
+    EventBase.h
+    EventBase.cpp
+    EventChoice.h
+    EventChoice.cpp
+    EventDirection.h
+    EventDirection.cpp
+    EventExNPCMessage.h
+    EventExNPCMessage.cpp
+    EventGetItem.h
+    EventGetItem.cpp
+    EventHomepoint.h
+    EventHomepoint.cpp
+    EventMessage.h
+    EventMessage.cpp
+    EventMultitalk.h
+    EventMultitalk.cpp
+    EventNPCMessage.h
+    EventNPCMessage.cpp
+    EventOpenMenu.h
+    EventOpenMenu.cpp
+    EventPerformActions.h
+    EventPerformActions.cpp
+    EventPlayScene.h
+    EventPlayScene.cpp
+    EventPrompt.h
+    EventPrompt.cpp
+    EventSequence.h
+    EventSequence.cpp
+    EventSpecialDirection.h
+    EventSpecialDirection.cpp
+    EventStageEffect.h
+    EventStageEffect.cpp
     Expertise.h
     Expertise.cpp
+    FriendSettings.h
+    FriendSettings.cpp
     Hotbar.h
     Hotbar.cpp
     InheritedSkill.h
@@ -269,12 +359,18 @@ OBJGEN_XML(${PROJECT_NAME}_STRUCTS
     PacketLoginReply.cpp
     PacketResponseCode.h
     PacketResponseCode.cpp
+    PartyCharacter.h
+    PartyCharacter.cpp
+    PartyMember.h
+    PartyMember.cpp
     Quest.h
     Quest.cpp
     RegisteredChannel.h
     RegisteredChannel.cpp
     RegisteredWorld.h
     RegisteredWorld.cpp
+    ServerCommandLine.h
+    ServerCommandLine.cpp
     ServerConfig.h
     ServerConfig.cpp
     ServerNPC.h
@@ -283,6 +379,12 @@ OBJGEN_XML(${PROJECT_NAME}_STRUCTS
     ServerObject.cpp
     ServerObjectBase.h
     ServerObjectBase.cpp
+    ServerShop.h
+    ServerShop.cpp
+    ServerShopProduct.h
+    ServerShopProduct.cpp
+    ServerShopTab.h
+    ServerShopTab.cpp
     ServerZone.h
     ServerZone.cpp
     ServerZoneSpot.h
@@ -305,6 +407,8 @@ OBJGEN_XML(${PROJECT_NAME}_STRUCTS
     MiBattleDamageData.h
     MiBreakData.cpp
     MiBreakData.h
+    MiCancelData.cpp
+    MiCancelData.h
     MiCastBasicData.cpp
     MiCastBasicData.h
     MiCastCancelData.cpp
@@ -345,8 +449,12 @@ OBJGEN_XML(${PROJECT_NAME}_STRUCTS
     MiDevilReunionConditionData.h
     MiDischargeData.cpp
     MiDischargeData.h
+    MiDoTDamageData.cpp
+    MiDoTDamageData.h
     MiDynamicMapData.h
     MiDynamicMapData.cpp
+    MiEffectData.cpp
+    MiEffectData.h
     MiEffectiveRangeData.cpp
     MiEffectiveRangeData.h
     MiExpertClassData.cpp
@@ -393,6 +501,8 @@ OBJGEN_XML(${PROJECT_NAME}_STRUCTS
     MiCZoneRelationData.cpp
     MiRelationZoneIDData.h
     MiRelationZoneIDData.cpp
+    MiShopProductData.cpp
+    MiShopProductData.h
     MiSkillBasicData.cpp
     MiSkillBasicData.h
     MiSkillCharasticData.cpp
@@ -407,6 +517,10 @@ OBJGEN_XML(${PROJECT_NAME}_STRUCTS
     MiSkillSpecialParams.h
     MiSkillTbl.h
     MiSkillTbl.cpp
+    MiStatusBasicData.cpp
+    MiStatusBasicData.h
+    MiStatusData.cpp
+    MiStatusData.h
     MiSummonData.cpp
     MiSummonData.h
     MiTargetData.cpp
@@ -444,6 +558,8 @@ OBJGEN_XML(${PROJECT_NAME}_STRUCTS
 ADD_LIBRARY(comp STATIC ${${PROJECT_NAME}_SRCS} ${${PROJECT_NAME}_HDRS}
     ${${PROJECT_NAME}_MOC_SRCS} ${${PROJECT_NAME}_STRUCTS})
 
+TARGET_COMPILE_DEFINITIONS(comp PUBLIC ${SQRAT_DEFINES})
+
 SET_TARGET_PROPERTIES(comp PROPERTIES FOLDER "Libraries")
 
 TARGET_INCLUDE_DIRECTORIES(comp PUBLIC
@@ -455,19 +571,19 @@ TARGET_INCLUDE_DIRECTORIES(comp PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}
 )
 
-TARGET_LINK_LIBRARIES(comp ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES}
+TARGET_LINK_LIBRARIES(comp mariadbclient ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES}
     ${SYSTEM_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT} objgen sqlite3
-    squirrel sqstdlib ttvfs ttvfs_zip tinyxml2 cassandra uv physfs)
+    squirrel sqstdlib ttvfs ttvfs_zip tinyxml2 physfs)
 
 ADD_DEPENDENCIES(comp asio sqrat gsl)
 
 IF(WIN32)
-    TARGET_LINK_LIBRARIES(comp advapi32 iphlpapi psapi shell32 userenv ws2_32)
+    TARGET_LINK_LIBRARIES(comp advapi32 iphlpapi psapi shell32 userenv
+        ws2_32 dbghelp)
 ENDIF(WIN32)
 
 # List of unit tests to add to CTest.
 SET(${PROJECT_NAME}_TEST_SRCS
-    Cassandra
     Convert
     Decrypt
 
@@ -475,6 +591,7 @@ SET(${PROJECT_NAME}_TEST_SRCS
     # DiffieHellman
 
     GeneratedObjects
+    MariaDB
     Packet
     ScriptEngine
     String

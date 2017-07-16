@@ -31,6 +31,7 @@
 #include "CString.h"
 #include "DatabaseConfig.h"
 #include "DatabaseQuery.h"
+#include "DatabaseChangeSet.h"
 #include "PersistentObject.h"
 
 namespace libcomp
@@ -174,10 +175,66 @@ public:
     virtual bool DeleteObjects(std::list<std::shared_ptr<PersistentObject>>& objs) = 0;
 
     /**
+     * Queue an object to insert during the next call to
+     * ProcessTransactionQueue.
+     * @param obj Pointer to the object to insert
+     * @param uuid UUID used to group changes together
+     */
+    void QueueInsert(std::shared_ptr<PersistentObject> obj,
+        const libobjgen::UUID& uuid = NULLUUID);
+
+    /**
+     * Queue an object to update during the next call to
+     * ProcessTransactionQueue.
+     * @param obj Pointer to the object to update
+     * @param uuid UUID used to group changes together
+     */
+    void QueueUpdate(std::shared_ptr<PersistentObject> obj,
+        const libobjgen::UUID& uuid = NULLUUID);
+
+    /**
+     * Queue an object to delete during the next call to
+     * ProcessTransactionQueue.
+     * @param obj Pointer to the object to delete
+     * @param uuid UUID used to group changes together
+     */
+    void QueueDelete(std::shared_ptr<PersistentObject> obj,
+        const libobjgen::UUID& uuid = NULLUUID);
+
+    /**
+     * Queue a set of changes to execute during the next call to
+     * ProcessTransactionQueue.
+     * @param changes DatabaseChangeSet to queue for processing
+     * @return true on success, false on failure
+     */
+    bool QueueChangeSet(const std::shared_ptr<DatabaseChangeSet>& changes);
+
+    /**
+     * Pop and process all transactions stored in the transaction queue.
+     * @return List of all transaction group UUIDs that failed to process
+     */
+    std::list<libobjgen::UUID> ProcessTransactionQueue();
+
+    /**
+     * Process one or many database changes as a single transaction.
+     * @param changes Grouping of changes to apply to the database
+     * @return true on success, false on failure
+     */
+    bool ProcessChangeSet(const std::shared_ptr<DatabaseChangeSet>& changes);
+
+    /**
+     * Check if the config is for the default database type.  Non-default connections are
+     * only responsible for verifying the schema of their own tables where-as
+     * default database connections may also have additional tables to maintain.
+     * @return true if the default database type is configured, false if it is not
+     */
+    bool UsingDefaultDatabaseType();
+
+    /**
      * Retrieve the last error raised by a database operation.
      * @return The last error that occurred
      */
-    String GetLastError() const;
+    virtual String GetLastError();
     
     /**
      * Get the database config.
@@ -197,11 +254,43 @@ protected:
     std::shared_ptr<PersistentObject> LoadSingleObjectFromRow(
         size_t typeHash, DatabaseQuery& query);
 
+    /**
+     * Process one or many standard database changes as a single transaction.
+     * @param changes Grouping of changes to apply to the database
+     * @return true on success, false on failure
+     */
+    virtual bool ProcessStandardChangeSet(const std::shared_ptr<
+        DBStandardChangeSet>& changes) = 0;
+
+    /**
+     * Process an operational change set as a single transaction.
+     * @param changes Grouping of changes to apply to the database
+     * @return true on success, false on failure
+     */
+    virtual bool ProcessOperationalChangeSet(const std::shared_ptr<
+        DBOperationalChangeSet>& changes) = 0;
+
+    /**
+     * Get the list of objects mapped to the current database type
+     * configured for the database.
+     * @return List of pointers to object definitions with a source
+     *  set to the current database type
+     */
+    std::vector<std::shared_ptr<libobjgen::MetaObject>> GetMappedObjects();
+
     /// Last error raised by a database related action
     String mError;
 
     /// Pointer to the config file used to configure the database connection
     std::shared_ptr<objects::DatabaseConfig> mConfig;
+
+private:
+    /// Map of transaction pointers by UUID
+    std::unordered_map<std::string,
+        std::shared_ptr<DBStandardChangeSet>> mTransactionQueue;
+
+    /// Mutex to lock accessing the transaction queue
+    std::mutex mTransactionLock;
 };
 
 } // namespace libcomp

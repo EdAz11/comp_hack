@@ -36,7 +36,6 @@
 #include <UUID.h>
 
 // Standard C++ 11 Includes
-#include <mutex>
 #include <typeindex>
 
 namespace libcomp
@@ -88,10 +87,16 @@ public:
     virtual std::shared_ptr<libobjgen::MetaObject> GetObjectMetadata() = 0;
 
     /**
-     * Get database bindings for every data member.
+     * Get database bindings for all or changed data members.
+     * Calling this will clear the set of fields marked as changed.
+     * @param retrieveAll Optional parameter to retrieve all data members
+     *  instead of the default change only behavior
+     * @param clearChanges Optional parameter to clear not clear all
+     *  fields marked as changed
      * @return List of pointers to data member database binds
      */
-    virtual std::list<libcomp::DatabaseBind*> GetMemberBindValues() = 0;
+    virtual std::list<libcomp::DatabaseBind*> GetMemberBindValues(
+        bool retrieveAll = false, bool clearChanges = true) = 0;
 
     /**
      * Load the object from a successfully executed query.
@@ -242,13 +247,19 @@ public:
 
     /**
      * Create a new instance of a PersistentObject of the specified type.
+     * @param doRegister Register the pointer automatically on success.
      * @return Pointer to a new PersistentObject of the specified type
      */
-    template<class T> static std::shared_ptr<T> New()
+    template<class T> static std::shared_ptr<T> New(bool doRegister = false)
     {
         if(std::is_base_of<PersistentObject, T>::value)
         {
-            return std::dynamic_pointer_cast<T>(New(typeid(T).hash_code()));
+            auto result = std::dynamic_pointer_cast<T>(New(typeid(T).hash_code()));
+            if(doRegister)
+            {
+                result->Register(result);
+            }
+            return result;
         }
 
         return nullptr;
@@ -343,6 +354,9 @@ protected:
 
     /// UUID associated to the object
     libobjgen::UUID mUUID;
+
+    /// Set of fields that have been updated since the last save operation
+    std::set<std::string> mDirtyFields;
 
 private:
     /// Map of intantiated objects listed by their UUID

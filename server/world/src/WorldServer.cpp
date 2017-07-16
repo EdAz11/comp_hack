@@ -27,7 +27,7 @@
 #include "WorldServer.h"
 
 // libcomp Includes
-#include <DatabaseConfigCassandra.h>
+#include <DatabaseConfigMariaDB.h>
 #include <DatabaseConfigSQLite3.h>
 #include <InternalConnection.h>
 #include <LobbyConnection.h>
@@ -42,15 +42,16 @@
 
 using namespace world;
 
-WorldServer::WorldServer(const char *szProgram, std::shared_ptr<
-    objects::ServerConfig> config, const libcomp::String& configPath) :
-    libcomp::BaseServer(szProgram, config, configPath)
+WorldServer::WorldServer(const char *szProgram,
+    std::shared_ptr<objects::ServerConfig> config,
+    std::shared_ptr<libcomp::ServerCommandLineParser> commandLine) :
+    libcomp::BaseServer(szProgram, config, commandLine)
 {
 }
 
 bool WorldServer::Initialize()
 {
-    auto self = shared_from_this();
+    auto self = std::dynamic_pointer_cast<WorldServer>(shared_from_this());
 
     if(!BaseServer::Initialize())
     {
@@ -58,15 +59,15 @@ bool WorldServer::Initialize()
     }
 
     auto conf = std::dynamic_pointer_cast<objects::WorldConfig>(mConfig);
-    
+
     libcomp::EnumMap<objects::ServerConfig::DatabaseType_t,
         std::shared_ptr<objects::DatabaseConfig>> configMap;
 
     configMap[objects::ServerConfig::DatabaseType_t::SQLITE3]
         = conf->GetSQLite3Config();
 
-    configMap[objects::ServerConfig::DatabaseType_t::CASSANDRA]
-        = conf->GetCassandraConfig();
+    configMap[objects::ServerConfig::DatabaseType_t::MARIADB]
+        = conf->GetMariaDBConfig();
 
     mDatabase = GetDatabase(configMap, true);
 
@@ -75,6 +76,8 @@ bool WorldServer::Initialize()
         return false;
     }
 
+    mCharacterManager = new CharacterManager(self);
+
     return true;
 }
 
@@ -82,9 +85,55 @@ void WorldServer::FinishInitialize()
 {
     auto conf = std::dynamic_pointer_cast<objects::WorldConfig>(mConfig);
 
+    mManagerConnection = std::make_shared<ManagerConnection>(
+        shared_from_this());
+
+    auto connectionManager = std::dynamic_pointer_cast<libcomp::Manager>(mManagerConnection);
+
+    // Build the lobby manager
+    auto packetManager = std::make_shared<libcomp::ManagerPacket>(
+        shared_from_this());
+    packetManager->AddParser<Parsers::GetWorldInfo>(to_underlying(
+        InternalPacketCode_t::PACKET_GET_WORLD_INFO));
+    packetManager->AddParser<Parsers::SetChannelInfo>(to_underlying(
+        InternalPacketCode_t::PACKET_SET_CHANNEL_INFO));
+    packetManager->AddParser<Parsers::AccountLogin>(to_underlying(
+        InternalPacketCode_t::PACKET_ACCOUNT_LOGIN));
+    packetManager->AddParser<Parsers::AccountLogout>(to_underlying(
+        InternalPacketCode_t::PACKET_ACCOUNT_LOGOUT));
+
+    // Add the managers to the main worker.
+    mMainWorker.AddManager(packetManager);
+    mMainWorker.AddManager(connectionManager);
+
+    // Build the channel manager
+    packetManager = std::make_shared<libcomp::ManagerPacket>(
+        shared_from_this());
+    packetManager->AddParser<Parsers::GetWorldInfo>(to_underlying(
+        InternalPacketCode_t::PACKET_GET_WORLD_INFO));
+    packetManager->AddParser<Parsers::SetChannelInfo>(to_underlying(
+        InternalPacketCode_t::PACKET_SET_CHANNEL_INFO));
+    packetManager->AddParser<Parsers::AccountLogin>(to_underlying(
+        InternalPacketCode_t::PACKET_ACCOUNT_LOGIN));
+    packetManager->AddParser<Parsers::AccountLogout>(to_underlying(
+        InternalPacketCode_t::PACKET_ACCOUNT_LOGOUT));
+    packetManager->AddParser<Parsers::CharacterLogin>(to_underlying(
+        InternalPacketCode_t::PACKET_CHARACTER_LOGIN));
+    packetManager->AddParser<Parsers::FriendsUpdate>(to_underlying(
+        InternalPacketCode_t::PACKET_FRIENDS_UPDATE));
+    packetManager->AddParser<Parsers::PartyUpdate>(to_underlying(
+        InternalPacketCode_t::PACKET_PARTY_UPDATE));
+
+    // Add the managers to the generic workers.
+    for(auto worker : mWorkers)
+    {
+        worker->AddManager(packetManager);
+        worker->AddManager(connectionManager);
+    }
+
+    // Now Connect to the lobby server.
     asio::io_service service;
 
-    // Connect to the world server.
     auto lobbyConnection = std::make_shared<libcomp::LobbyConnection>(service,
             libcomp::LobbyConnection::ConnectionMode_t::MODE_WORLD_UP);
 
@@ -122,41 +171,15 @@ void WorldServer::FinishInitialize()
 
     delete pMessage;
 
-    mManagerConnection = std::make_shared<ManagerConnection>(
-        shared_from_this());
-
     lobbyConnection->Close();
     serviceThread.join();
     lobbyConnection.reset();
     messageQueue.reset();
-
-    auto connectionManager = std::dynamic_pointer_cast<libcomp::Manager>(mManagerConnection);
-
-    auto packetManager = std::make_shared<libcomp::ManagerPacket>(
-        shared_from_this());
-    packetManager->AddParser<Parsers::GetWorldInfo>(to_underlying(
-        InternalPacketCode_t::PACKET_GET_WORLD_INFO));
-    packetManager->AddParser<Parsers::SetChannelInfo>(to_underlying(
-        InternalPacketCode_t::PACKET_SET_CHANNEL_INFO));
-    packetManager->AddParser<Parsers::AccountLogin>(to_underlying(
-        InternalPacketCode_t::PACKET_ACCOUNT_LOGIN));
-    packetManager->AddParser<Parsers::AccountLogout>(to_underlying(
-        InternalPacketCode_t::PACKET_ACCOUNT_LOGOUT));
-
-    //Add the managers to the main worker.
-    mMainWorker.AddManager(packetManager);
-    mMainWorker.AddManager(connectionManager);
-
-    // Add the managers to the generic workers.
-    for(auto worker : mWorkers)
-    {
-        worker->AddManager(packetManager);
-        worker->AddManager(connectionManager);
-    }
 }
 
 WorldServer::~WorldServer()
 {
+    delete mCharacterManager;
 }
 
 const std::shared_ptr<objects::RegisteredWorld> WorldServer::GetRegisteredWorld() const
@@ -174,6 +197,26 @@ std::shared_ptr<objects::RegisteredChannel> WorldServer::GetChannel(
     }
 
     return nullptr;
+}
+
+std::shared_ptr<libcomp::InternalConnection> WorldServer::GetChannelConnectionByID(
+    int8_t channelID) const
+{
+    for(auto cPair : mRegisteredChannels)
+    {
+        if(cPair.second->GetID() == channelID)
+        {
+            return cPair.first;
+        }
+    }
+
+    return nullptr;
+}
+
+std::map<std::shared_ptr<libcomp::InternalConnection>,
+    std::shared_ptr<objects::RegisteredChannel>> WorldServer::GetChannels() const
+{
+    return mRegisteredChannels;
 }
 
 uint8_t WorldServer::GetNextChannelID() const
@@ -230,7 +273,7 @@ std::shared_ptr<libcomp::Database> WorldServer::GetWorldDatabase() const
 {
     return mDatabase;
 }
-   
+
 std::shared_ptr<libcomp::Database> WorldServer::GetLobbyDatabase() const
 {
     return mLobbyDatabase;
@@ -309,6 +352,11 @@ bool WorldServer::RegisterServer()
 AccountManager* WorldServer::GetAccountManager()
 {
     return &mAccountManager;
+}
+
+CharacterManager* WorldServer::GetCharacterManager()
+{
+    return mCharacterManager;
 }
 
 std::shared_ptr<libcomp::TcpConnection> WorldServer::CreateConnection(

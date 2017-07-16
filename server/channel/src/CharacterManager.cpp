@@ -38,11 +38,15 @@
 #include "ChannelServer.h"
 
 // object Includes
+#include <AccountWorldData.h>
+#include <CharacterProgress.h>
+#include <DemonBox.h>
 #include <Expertise.h>
 #include <InheritedSkill.h>
 #include <Item.h>
 #include <ItemBox.h>
 #include <MiAcquisitionSkillData.h>
+#include <MiCancelData.h>
 #include <MiDevilBattleData.h>
 #include <MiDevilData.h>
 #include <MiDevilLVUpData.h>
@@ -55,8 +59,10 @@
 #include <MiNPCBasicData.h>
 #include <MiPossessionData.h>
 #include <MiSkillData.h>
+#include <MiStatusData.h>
 #include <ServerZone.h>
 #include <StatusEffect.h>
+#include <TradeSession.h>
 
 using namespace channel;
 
@@ -119,30 +125,21 @@ void CharacterManager::SendCharacterData(const std::shared_ptr<
     reply.WriteS8(cs->GetLevel());
     reply.WriteS16Little(c->GetLNC());
 
-    GetEntityStatsPacketData(reply, cs, cState, false);
+    GetEntityStatsPacketData(reply, cs, cState, 0);
 
     reply.WriteS16(-5600); // Unknown
     reply.WriteS16(5600); // Unknown
+    
+    auto statusEffects = cState->GetCurrentStatusEffectStates(
+        mServer.lock()->GetDefinitionManager());
 
-    // Add status effects + 1 for testing effect below
-    size_t statusEffectCount = c->StatusEffectsCount() + 1;
-    reply.WriteU32Little(static_cast<uint32_t>(statusEffectCount));
-    for(auto effect : c->GetStatusEffects())
+    reply.WriteU32Little(static_cast<uint32_t>(statusEffects.size()));
+    for(auto ePair : statusEffects)
     {
-        reply.WriteU32Little(effect->GetEffect());
-        // Expiration time is returned as a float OR int32 depending
-        // on if it is a countdown in game seconds remaining or a
-        // fixed time to expire.  This is dependent on the effect type.
-        /// @todo: implement fixed time expiration
-        reply.WriteFloat(state->ToClientTime(
-            (ServerTime)effect->GetDuration()));
-        reply.WriteU8(effect->GetStack());
+        reply.WriteU32Little(ePair.first->GetEffect());
+        reply.WriteS32Little((int32_t)ePair.second);
+        reply.WriteU8(ePair.first->GetStack());
     }
-
-    // This is the COMP experience alpha status effect (hence +1)...
-    reply.WriteU32Little(1055);
-    reply.WriteU32Little(1325025608);   // Fixed time expiration
-    reply.WriteU8(1);
 
     size_t skillCount = c->LearnedSkillsCount();
     reply.WriteU32(static_cast<uint32_t>(skillCount));
@@ -189,7 +186,7 @@ void CharacterManager::SendCharacterData(const std::shared_ptr<
     reply.WriteS64Little(-1);
     reply.WriteS64Little(-1);
 
-    auto zone = mServer.lock()->GetZoneManager()->GetZoneInstance(client);
+    auto zone = cState->GetZone();
     auto zoneDef = zone->GetDefinition();
 
     reply.WriteS32Little((int32_t)zone->GetID());
@@ -199,9 +196,12 @@ void CharacterManager::SendCharacterData(const std::shared_ptr<
     reply.WriteFloat(cState->GetDestinationRotation());
 
     reply.WriteU8(0);   //Unknown bool
-    reply.WriteS32Little(0); // Homepoint zone
-    reply.WriteFloat(0); // Homepoint X
-    reply.WriteFloat(0); // Homepoint Y
+
+    // Homepoint
+    reply.WriteS32Little((int32_t)c->GetHomepointZone());
+    reply.WriteFloat(c->GetHomepointX());
+    reply.WriteFloat(c->GetHomepointY());
+
     reply.WriteS8(0);   // Unknown
     reply.WriteS8(0);   // Unknown
     reply.WriteS8(0);   // Unknown
@@ -226,15 +226,12 @@ void CharacterManager::SendOtherCharacterData(const std::list<std::shared_ptr<
         return;
     }
 
-    // Keep track of where client specific times need to be written
-    std::unordered_map<uint32_t, ServerTime> timePositions;
-
-    auto zone = mServer.lock()->GetZoneManager()->GetZoneInstance(clients.front());
-    auto zoneDef = zone->GetDefinition();
-
     auto cState = otherState->GetCharacterState();
     auto c = cState->GetEntity();
     auto cs = c->GetCoreStats().Get();
+
+    auto zone = cState->GetZone();
+    auto zoneDef = zone->GetDefinition();
 
     libcomp::Packet reply;
     reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_OTHER_CHARACTER_DATA);
@@ -276,14 +273,15 @@ void CharacterManager::SendOtherCharacterData(const std::list<std::shared_ptr<
     reply.WriteS8(cs->GetLevel());
     reply.WriteS16Little(c->GetLNC());
     
-    size_t statusEffectCount = c->StatusEffectsCount();
-    reply.WriteU32Little(static_cast<uint32_t>(statusEffectCount));
-    for(auto effect : c->GetStatusEffects())
+    auto statusEffects = cState->GetCurrentStatusEffectStates(
+        mServer.lock()->GetDefinitionManager());
+
+    reply.WriteU32Little(static_cast<uint32_t>(statusEffects.size()));
+    for(auto ePair : statusEffects)
     {
-        reply.WriteU32Little(effect->GetEffect());
-        timePositions[reply.Size()] = effect->GetDuration();
-        reply.WriteFloat(0.f);
-        reply.WriteU8(effect->GetStack());
+        reply.WriteU32Little(ePair.first->GetEffect());
+        reply.WriteS32Little((int32_t)ePair.second);
+        reply.WriteU8(ePair.first->GetStack());
     }
 
     // Unknown
@@ -296,11 +294,13 @@ void CharacterManager::SendOtherCharacterData(const std::list<std::shared_ptr<
     reply.WriteFloat(cState->GetDestinationY());
     reply.WriteFloat(cState->GetDestinationRotation());
 
-    reply.WriteU8(0);   //Unknown bool
+    reply.WriteU8(otherState->GetAcceptRevival() ? 1 : 0);
     reply.WriteS8(0);   // Unknown
+
+    libcomp::String clanName;
     reply.WriteString16Little(libcomp::Convert::ENCODING_CP932,
-        "Unknown", true);
-    reply.WriteS8(0);   // Unknown
+        clanName, true);
+    reply.WriteS8(otherState->GetStatusIcon());
     reply.WriteS8(0);   // Unknown
     reply.WriteS8(0);   // Unknown
 
@@ -332,17 +332,7 @@ void CharacterManager::SendOtherCharacterData(const std::list<std::shared_ptr<
         reply.WriteU32Little(0);    // VA Item Type
     }
 
-    for(auto client : clients)
-    {
-        auto state = client->GetClientState();
-        for(auto timePair : timePositions)
-        {
-            reply.Seek(timePair.first);
-            reply.WriteFloat(state->ToClientTime(timePair.second));
-        }
-
-        client->SendPacket(reply);
-    }
+    ChannelClientConnection::BroadcastPacket(clients, reply);
 }
 
 void CharacterManager::SendPartnerData(const std::shared_ptr<
@@ -352,7 +342,6 @@ void CharacterManager::SendPartnerData(const std::shared_ptr<
     auto cState = state->GetCharacterState();
     auto dState = state->GetDemonState();
     auto character = cState->GetEntity();
-    auto comp = character->GetCOMP();
 
     auto d = dState->GetEntity();
     if(d == nullptr)
@@ -360,36 +349,15 @@ void CharacterManager::SendPartnerData(const std::shared_ptr<
         return;
     }
 
-    int8_t slot = -1;
-    for(size_t i = 0; i < comp.size(); i++)
-    {
-        if(d == comp[i].Get())
-        {
-            slot = (int8_t)i;
-            break;
-        }
-    }
-
-    if(slot == -1)
-    {
-        LOG_ERROR(libcomp::String("Parter demon encountered that does not"
-            " exist in the COMP of character: %1\n").Arg(
-                character->GetUUID().ToString()));
-        return;
-    }
-
     auto server = mServer.lock();
     auto definitionManager = server->GetDefinitionManager();
     auto def = definitionManager->GetDevilData(d->GetType());
-
-    dState->RecalculateStats(definitionManager);
-
     auto ds = d->GetCoreStats().Get();
 
     libcomp::Packet reply;
     reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_PARTNER_DATA);
     reply.WriteS32Little(dState->GetEntityID());
-    reply.WriteS8(slot);
+    reply.WriteS8(d->GetBoxSlot());
     reply.WriteS64Little(state->GetObjectID(d->GetUUID()));
     reply.WriteU32Little(d->GetType());
     reply.WriteS16Little(dState->GetMaxHP());
@@ -400,16 +368,17 @@ void CharacterManager::SendPartnerData(const std::shared_ptr<
     reply.WriteS8(ds->GetLevel());
     reply.WriteS16Little(def->GetBasic()->GetLNC());
 
-    GetEntityStatsPacketData(reply, ds, dState, false);
+    GetEntityStatsPacketData(reply, ds, dState, 0);
+    
+    auto statusEffects = dState->GetCurrentStatusEffectStates(
+        mServer.lock()->GetDefinitionManager());
 
-    size_t statusEffectCount = d->StatusEffectsCount();
-    reply.WriteU32Little(static_cast<uint32_t>(statusEffectCount));
-    for(auto effect : d->GetStatusEffects())
+    reply.WriteU32Little(static_cast<uint32_t>(statusEffects.size()));
+    for(auto ePair : statusEffects)
     {
-        reply.WriteU32Little(effect->GetEffect());
-        reply.WriteFloat(state->ToClientTime(
-            (ServerTime)effect->GetDuration()));    //Registered as int32?
-        reply.WriteU8(effect->GetStack());
+        reply.WriteU32Little(ePair.first->GetEffect());
+        reply.WriteS32Little((int32_t)ePair.second);
+        reply.WriteU8(ePair.first->GetStack());
     }
 
     //Learned skill count will always be static
@@ -439,7 +408,7 @@ void CharacterManager::SendPartnerData(const std::shared_ptr<
     reply.WriteS64Little(-1);
     reply.WriteS64Little(-1);
 
-    auto zone = server->GetZoneManager()->GetZoneInstance(client);
+    auto zone = dState->GetZone();
     auto zoneDef = zone->GetDefinition();
 
     reply.WriteS32Little((int32_t)zone->GetID());
@@ -508,33 +477,31 @@ void CharacterManager::SendOtherPartnerData(const std::list<std::shared_ptr<
         return;
     }
 
-    // Keep track of where client specific times need to be written
-    std::unordered_map<uint32_t, ServerTime> timePositions;
-
-    auto zone = mServer.lock()->GetZoneManager()->GetZoneInstance(clients.front());
-    auto zoneDef = zone->GetDefinition();
-
     auto dState = otherState->GetDemonState();
     auto d = dState->GetEntity();
     auto ds = d->GetCoreStats().Get();
+
+    auto zone = dState->GetZone();
+    auto zoneDef = zone->GetDefinition();
 
     libcomp::Packet reply;
     reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_OTHER_PARTNER_DATA);
     reply.WriteS32Little(dState->GetEntityID());
     reply.WriteU32Little(d->GetType());
-    reply.WriteS32Little(otherState->GetDemonState()->GetEntityID());
+    reply.WriteS32Little(otherState->GetCharacterState()->GetEntityID());
     reply.WriteS16Little(dState->GetMaxHP());
     reply.WriteS16Little(ds->GetHP());
     reply.WriteS8(ds->GetLevel());
     
-    size_t statusEffectCount = d->StatusEffectsCount();
-    reply.WriteU32Little(static_cast<uint32_t>(statusEffectCount));
-    for(auto effect : d->GetStatusEffects())
+    auto statusEffects = dState->GetCurrentStatusEffectStates(
+        mServer.lock()->GetDefinitionManager());
+
+    reply.WriteU32Little(static_cast<uint32_t>(statusEffects.size()));
+    for(auto ePair : statusEffects)
     {
-        reply.WriteU32Little(effect->GetEffect());
-        timePositions[reply.Size()] = effect->GetDuration();
-        reply.WriteFloat(0.f);
-        reply.WriteU8(effect->GetStack());
+        reply.WriteU32Little(ePair.first->GetEffect());
+        reply.WriteS32Little((int32_t)ePair.second);
+        reply.WriteU8(ePair.first->GetStack());
     }
 
     // Unknown
@@ -554,30 +521,20 @@ void CharacterManager::SendOtherPartnerData(const std::list<std::shared_ptr<
     reply.WriteU16Little(0);    //Unknown
     reply.WriteU8(0);   //Unknown
 
-    for(auto client : clients)
-    {
-        auto state = client->GetClientState();
-        for(auto timePair : timePositions)
-        {
-            reply.Seek(timePair.first);
-            reply.WriteFloat(state->ToClientTime(timePair.second));
-        }
-
-        client->SendPacket(reply);
-    }
+    ChannelClientConnection::BroadcastPacket(clients, reply);
 }
 
-void CharacterManager::SendCOMPDemonData(const std::shared_ptr<
+void CharacterManager::SendDemonData(const std::shared_ptr<
     ChannelClientConnection>& client,
-    int8_t box, int8_t slot, int64_t id)
+    int8_t boxID, int8_t slot, int64_t demonID)
 {
     auto state = client->GetClientState();
     auto cState = state->GetCharacterState();
     auto dState = state->GetDemonState();
-    auto comp = cState->GetEntity()->GetCOMP();
+    auto box = GetDemonBox(state, boxID);
 
-    auto d = comp[(size_t)slot].Get();
-    if(d == nullptr || state->GetObjectID(d->GetUUID()) != id)
+    auto d = box->GetDemons((size_t)slot).Get();
+    if(d == nullptr || state->GetObjectID(d->GetUUID()) != demonID)
     {
         return;
     }
@@ -586,10 +543,10 @@ void CharacterManager::SendCOMPDemonData(const std::shared_ptr<
     bool isSummoned = dState->GetEntity() == d;
 
     libcomp::Packet reply;
-    reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_COMP_DEMON_DATA);
-    reply.WriteS8(box);
+    reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_DEMON_BOX_DATA);
+    reply.WriteS8(boxID);
     reply.WriteS8(slot);
-    reply.WriteS64Little(id);
+    reply.WriteS64Little(demonID);
     reply.WriteU32Little(d->GetType());
 
     reply.WriteS16Little(cs->GetMaxHP());
@@ -599,7 +556,7 @@ void CharacterManager::SendCOMPDemonData(const std::shared_ptr<
     reply.WriteS64Little(cs->GetXP());
     reply.WriteS8(cs->GetLevel());
 
-    GetEntityStatsPacketData(reply, cs, isSummoned ? dState : nullptr, false);
+    GetEntityStatsPacketData(reply, cs, isSummoned ? dState : nullptr, 0);
 
     //Learned skill count will always be static
     reply.WriteS32Little(8);
@@ -678,25 +635,141 @@ void CharacterManager::SendCOMPDemonData(const std::shared_ptr<
     client->SendPacket(reply);
 }
 
-void CharacterManager::SendStatusIcon(const std::shared_ptr<ChannelClientConnection>& client)
+uint8_t CharacterManager::RecalculateStats(std::shared_ptr<
+    ChannelClientConnection> client, int32_t entityID,
+    bool updateSourceClient)
 {
-    /// @todo: implement icons
-    uint8_t icon = 0;
+    auto state = client
+        ? client->GetClientState()
+        : ClientState::GetEntityClientState(entityID, false);
+    if(!state)
+    {
+        return 0;
+    }
 
-    libcomp::Packet reply;
-    reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_STATUS_ICON);
-    reply.WriteU8(0);
-    reply.WriteU8(icon);
+    auto eState = state->GetEntityState(entityID);
+    if(!eState || !eState->Ready())
+    {
+        return 0;
+    }
+    
+    auto definitionManager = mServer.lock()->GetDefinitionManager();
+    uint8_t result = eState->RecalculateStats(definitionManager);
+    if(result)
+    {
+        SendEntityStats(client, entityID, updateSourceClient);
 
-    client->SendPacket(reply);
+        if(result == 2 && state->GetPartyID())
+        {
+            libcomp::Packet request;
+            if(std::dynamic_pointer_cast<CharacterState>(eState))
+            {
+                state->GetPartyCharacterPacket(request);
+            }
+            else
+            {
+                state->GetPartyDemonPacket(request);
+            }
+            mServer.lock()->GetManagerConnection()->GetWorldConnection()->SendPacket(request);
+        }
+    }
 
-    /// @todo: broadcast to other players
+    return result;
+}
+
+void CharacterManager::SendEntityStats(std::shared_ptr<
+    ChannelClientConnection> client, int32_t entityID,
+    bool includeSelf)
+{
+    auto server = mServer.lock();
+    if(!client)
+    {
+        client = server->GetManagerConnection()
+            ->GetEntityClient(entityID, false);
+        if(!client)
+        {
+            return;
+        }
+    }
+
+    auto state = client->GetClientState();
+    auto eState = state->GetEntityState(entityID);
+
+    if(!eState || !eState->Ready())
+    {
+        return;
+    }
+
+    libcomp::Packet p;
+    p.WritePacketCode(ChannelToClientPacketCode_t::PACKET_ENTITY_STATS);
+    p.WriteS32Little(eState->GetEntityID());
+
+    GetEntityStatsPacketData(p, eState->GetCoreStats(), eState, 3);
+
+    p.WriteS32Little((int32_t)eState->GetMaxHP());
+
+    server->GetZoneManager()->BroadcastPacket(client, p, includeSelf);
+}
+
+void CharacterManager::SendEntityRevival(std::shared_ptr<ChannelClientConnection> client,
+    const std::shared_ptr<ActiveEntityState>& eState, int8_t action, bool sendToZone)
+{
+    auto cs = eState->GetCoreStats();
+    if(cs)
+    {
+        bool syncXP = cs->GetLevel() >= 10;
+
+        libcomp::Packet p;
+        p.WritePacketCode(ChannelToClientPacketCode_t::PACKET_REVIVE_ENTITY);
+        p.WriteS32Little(eState->GetEntityID());
+        p.WriteS8(action);
+        p.WriteS32Little(cs->GetHP());
+        p.WriteS32Little(cs->GetMP());
+        p.WriteS64Little(syncXP ? cs->GetXP() : 0);
+
+        if(sendToZone)
+        {
+            mServer.lock()->GetZoneManager()->BroadcastPacket(client, p);
+        }
+        else
+        {
+            client->SendPacket(p);
+        }
+    }
+}
+
+void CharacterManager::SetStatusIcon(const std::shared_ptr<ChannelClientConnection>& client, int8_t icon)
+{
+    auto state = client->GetClientState();
+
+    if(state->GetStatusIcon() == icon)
+    {
+        return;
+    }
+
+    state->SetStatusIcon(icon);
+
+    // Send icon to the client
+    libcomp::Packet p;
+    p.WritePacketCode(ChannelToClientPacketCode_t::PACKET_STATUS_ICON);
+    p.WriteS8(0);
+    p.WriteS8(icon);
+
+    client->SendPacket(p);
+
+    // Send icon to others in the zone
+    p.Clear();
+    p.WritePacketCode(ChannelToClientPacketCode_t::PACKET_STATUS_ICON_OTHER);
+    p.WriteS32Little(state->GetCharacterState()->GetEntityID());
+    p.WriteS8(icon);
+
+    mServer.lock()->GetZoneManager()->BroadcastPacket(client, p, false);
 }
 
 void CharacterManager::SummonDemon(const std::shared_ptr<
-    channel::ChannelClientConnection>& client, int64_t demonID)
+    channel::ChannelClientConnection>& client, int64_t demonID, bool updatePartyState)
 {
-    StoreDemon(client);
+    StoreDemon(client, false);
 
     auto state = client->GetClientState();
     auto cState = state->GetCharacterState();
@@ -705,13 +778,17 @@ void CharacterManager::SummonDemon(const std::shared_ptr<
 
     auto demon = std::dynamic_pointer_cast<objects::Demon>(
         libcomp::PersistentObject::GetObjectByUUID(state->GetObjectUUID(demonID)));
-    if(nullptr == demon || character->GetUUID() != demon->GetCharacter().GetUUID())
+    if(nullptr == demon)
     {
         return;
     }
 
+    auto server = mServer.lock();
+    auto definitionManager = server->GetDefinitionManager();
+
     character->SetActiveDemon(demon);
     dState->SetEntity(demon);
+    dState->SetStatusEffectsActive(true, definitionManager);
     dState->SetDestinationX(cState->GetDestinationX());
     dState->SetDestinationY(cState->GetDestinationY());
 
@@ -721,13 +798,20 @@ void CharacterManager::SummonDemon(const std::shared_ptr<
 
     client->SendPacket(reply);
 
-    auto otherClients = mServer.lock()->GetZoneManager()
+    auto otherClients = server->GetZoneManager()
         ->GetZoneConnections(client, false);
     SendOtherPartnerData(otherClients, state);
+
+    if(updatePartyState && state->GetPartyID())
+    {
+        libcomp::Packet request;
+        state->GetPartyDemonPacket(request);
+        mServer.lock()->GetManagerConnection()->GetWorldConnection()->SendPacket(request);
+    }
 }
 
 void CharacterManager::StoreDemon(const std::shared_ptr<
-    channel::ChannelClientConnection>& client)
+    channel::ChannelClientConnection>& client, bool updatePartyState)
 {
     auto state = client->GetClientState();
     auto cState = state->GetCharacterState();
@@ -740,42 +824,138 @@ void CharacterManager::StoreDemon(const std::shared_ptr<
         return;
     }
 
+    auto server = mServer.lock();
+    auto definitionManager = server->GetDefinitionManager();
+    auto zoneManager = server->GetZoneManager();
+    auto zone = zoneManager->GetZoneInstance(client);
+
+    dState->SetStatusEffectsActive(false, definitionManager);
+    UpdateStatusEffects(dState, true);
     dState->SetEntity(nullptr);
     character->SetActiveDemon(NULLUUID);
 
+    std::list<int32_t> removeIDs = { dState->GetEntityID() };
+
+    //Remove the entity from each client's zone
+    zoneManager->RemoveEntitiesFromZone(zone, removeIDs);
+
+    //Send the request to free up the object data
     libcomp::Packet reply;
     reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_REMOVE_OBJECT);
     reply.WriteS32Little(dState->GetEntityID());
 
+    zoneManager->BroadcastPacket(client, reply, true);
+    
+    if(updatePartyState && state->GetPartyID())
+    {
+        libcomp::Packet request;
+        state->GetPartyDemonPacket(request);
+        mServer.lock()->GetManagerConnection()->GetWorldConnection()->SendPacket(request);
+    }
+}
+
+void CharacterManager::SendDemonBoxData(const std::shared_ptr<
+    ChannelClientConnection>& client, int8_t boxID)
+{
+    auto state = client->GetClientState();
+    auto cState = state->GetCharacterState();
+    auto box = GetDemonBox(state, boxID);
+
+    auto character = cState->GetEntity();
+    auto progress = character->GetProgress();
+
+    uint32_t expiration = 0;
+    int32_t count = 0;
+    size_t maxSlots = boxID == 0 ? (size_t)progress->GetMaxCOMPSlots() : 50;
+    if(nullptr != box)
+    {
+        for(size_t i = 0; i < maxSlots; i++)
+        {
+            count += !box->GetDemons(i).IsNull() ? 1 : 0;
+        }
+        expiration = box->GetRentalExpiration();
+    }
+
+    libcomp::Packet reply;
+    reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_DEMON_BOX);
+
+    reply.WriteS8(boxID);
+    reply.WriteS32Little(0);   //Unknown
+    reply.WriteS32Little(expiration == 0 || box == nullptr
+        ? -1 : ChannelServer::GetExpirationInSeconds(expiration));
+    reply.WriteS32Little(count);
+
+    for(size_t i = 0; i < maxSlots; i++)
+    {
+        if(nullptr == box || box->GetDemons(i).IsNull()) continue;
+
+        GetDemonPacketData(reply, client, box, (int8_t)i);
+        reply.WriteU8(0);   //Unknown
+    }
+
+    reply.WriteU8((uint8_t)maxSlots);
+
     client->SendPacket(reply);
+}
 
-    // Remove the entity from other client's games
-    reply.Clear();
-    reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_REMOVE_ENTITY);
-    reply.WriteS32Little(dState->GetEntityID());
+std::shared_ptr<objects::DemonBox> CharacterManager::GetDemonBox(
+    ClientState* state, int8_t boxID)
+{
+    auto cState = state->GetCharacterState();
+    auto character = cState->GetEntity();
+    auto worldData = state->GetAccountWorldData();
 
-    mServer.lock()->GetZoneManager()->BroadcastPacket(client, reply, false);
+    return boxID == 0
+        ? character->GetCOMP().Get()
+        : worldData->GetDemonBoxes((size_t)(boxID-1)).Get();
+}
+
+std::shared_ptr<objects::ItemBox> CharacterManager::GetItemBox(
+    ClientState* state, int8_t boxType, int64_t boxID)
+{
+    auto cState = state->GetCharacterState();
+    auto character = cState->GetEntity();
+    auto worldData = state->GetAccountWorldData();
+
+    std::shared_ptr<objects::ItemBox> box;
+    switch((objects::ItemBox::Type_t)boxType)
+    {
+        case objects::ItemBox::Type_t::INVENTORY:
+            box = character->GetItemBoxes((size_t)boxID).Get();
+            break;
+        case objects::ItemBox::Type_t::ITEM_DEPO:
+            box = worldData->GetItemBoxes((size_t)boxID).Get();
+            break;
+        default:
+            if(nullptr == box)
+            {
+                LOG_ERROR(libcomp::String("Attempted to retrieve unknown"
+                    " item box of type %1, with ID %2\n").Arg(boxType).Arg(boxID));
+            }
+            break;
+    }
+
+    return box;
 }
 
 void CharacterManager::SendItemBoxData(const std::shared_ptr<
-    ChannelClientConnection>& client, int64_t boxID)
+    ChannelClientConnection>& client, const std::shared_ptr<objects::ItemBox>& box)
 {
     std::list<uint16_t> allSlots = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
                                     10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
                                     20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
                                     30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
                                     40, 41, 42, 43, 44, 45, 46, 47, 48, 49 };
-    SendItemBoxData(client, boxID, allSlots);
+    SendItemBoxData(client, box, allSlots);
 }
 
 void CharacterManager::SendItemBoxData(const std::shared_ptr<
-    ChannelClientConnection>& client, int64_t boxID,
+    ChannelClientConnection>& client, const std::shared_ptr<objects::ItemBox>& box,
     const std::list<uint16_t>& slots)
 {
     auto state = client->GetClientState();
     auto cState = state->GetCharacterState();
     auto character = cState->GetEntity();
-    auto box = character->GetItemBoxes((size_t)boxID);
 
     bool updateMode = slots.size() < 50;
 
@@ -788,8 +968,8 @@ void CharacterManager::SendItemBoxData(const std::shared_ptr<
     {
         reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_ITEM_BOX);
     }
-    reply.WriteS8(box->GetType());
-    reply.WriteS64(state->GetObjectID(box->GetUUID()));
+    reply.WriteS8((int8_t)box->GetType());
+    reply.WriteS64(box->GetBoxID());
     
     if(updateMode)
     {
@@ -861,24 +1041,12 @@ void CharacterManager::SendItemBoxData(const std::shared_ptr<
         reply.WriteU8(0); // Failed Item Fuse 0 = OK | 1 = FAIL*/
 
         auto basicEffect = item->GetBasicEffect();
-        if(basicEffect)
-        {
-            reply.WriteU32Little(basicEffect);
-        }
-        else
-        {
-            reply.WriteU32Little(static_cast<uint32_t>(-1));
-        }
+        reply.WriteU32Little(basicEffect ? basicEffect
+            : static_cast<uint32_t>(-1));
 
         auto specialEffect = item->GetSpecialEffect();
-        if(specialEffect)
-        {
-            reply.WriteU32Little(specialEffect);
-        }
-        else
-        {
-            reply.WriteU32Little(static_cast<uint32_t>(-1));
-        }
+        reply.WriteU32Little(specialEffect ? specialEffect
+            : static_cast<uint32_t>(-1));
 
         for(auto bonus : item->GetFuseBonuses())
         {
@@ -891,14 +1059,17 @@ void CharacterManager::SendItemBoxData(const std::shared_ptr<
 
 std::list<std::shared_ptr<objects::Item>> CharacterManager::GetExistingItems(
     const std::shared_ptr<objects::Character>& character,
-    uint32_t itemID)
+    uint32_t itemID, std::shared_ptr<objects::ItemBox> box)
 {
-    auto itemBox = character->GetItemBoxes(0).Get();
+    if(box == nullptr)
+    {
+        box = character->GetItemBoxes(0).Get();
+    }
 
     std::list<std::shared_ptr<objects::Item>> existing;
     for(size_t i = 0; i < 50; i++)
     {
-        auto item = itemBox->GetItems(i);
+        auto item = box->GetItems(i);
         if(!item.IsNull() && item->GetType() == itemID)
         {
             existing.push_back(item.Get());
@@ -942,7 +1113,6 @@ bool CharacterManager::AddRemoveItem(const std::shared_ptr<
     auto itemBox = character->GetItemBoxes(0).Get();
 
     auto server = mServer.lock();
-    auto db = server->GetWorldDatabase();
     auto def = server->GetDefinitionManager()->GetItemData(itemID);
     if(nullptr == def)
     {
@@ -951,6 +1121,8 @@ bool CharacterManager::AddRemoveItem(const std::shared_ptr<
 
     auto existing = GetExistingItems(character, itemID);
 
+    auto dbChanges = libcomp::DatabaseChangeSet::Create(
+        state->GetAccountUID());
     std::list<uint16_t> updatedSlots;
     auto maxStack = def->GetPossession()->GetStackSize();
     if(add)
@@ -1022,12 +1194,12 @@ bool CharacterManager::AddRemoveItem(const std::shared_ptr<
                     item->SetItemBox(itemBox);
                     item->SetBoxSlot((int8_t)freeSlot);
                     
-                    if(!item->Insert(db) ||
-                        !itemBox->SetItems(freeSlot, item))
+                    if(!itemBox->SetItems(freeSlot, item))
                     {
                         return false;
                     }
                     updatedSlots.push_back((uint16_t)freeSlot);
+                    dbChanges->Insert(item);
 
                     if(added == quantity)
                     {
@@ -1101,21 +1273,20 @@ bool CharacterManager::AddRemoveItem(const std::shared_ptr<
             {
                 removed = (uint16_t)(removed + item->GetStackSize());
                 
-                if(!itemBox->SetItems((size_t)slot, NULLUUID) ||
-                    !itemBox->Update(db) || !item->Delete(db))
+                if(!itemBox->SetItems((size_t)slot, NULLUUID))
                 {
                     return false;
                 }
+
+                dbChanges->Delete(item);
             }
             else
             {
                 item->SetStackSize((uint16_t)(item->GetStackSize() -
                     (quantity - removed)));
-                if(!item->Update(db))
-                {
-                    return false;
-                }
                 removed = quantity;
+
+                dbChanges->Update(item);
             }
             updatedSlots.push_back((uint16_t)slot);
 
@@ -1126,12 +1297,11 @@ bool CharacterManager::AddRemoveItem(const std::shared_ptr<
         }
     }
 
-    SendItemBoxData(client, 0, updatedSlots);
+    SendItemBoxData(client, itemBox, updatedSlots);
 
-    if(!itemBox->Update(db))
-    {
-        return false;
-    }
+    dbChanges->Update(itemBox);
+
+    server->GetWorldDatabase()->QueueChangeSet(dbChanges);
 
     return true;
 }
@@ -1198,47 +1368,53 @@ void CharacterManager::EquipItem(const std::shared_ptr<
     }
 
     auto cs = character->GetCoreStats().Get();
+    GetEntityStatsPacketData(reply, cs, cState, 2);
 
-    // Return updated stats in a format not like that seen in
-    // GetEntityStatsPacketData
-    reply.WriteS16Little(static_cast<int16_t>(
-        cState->GetSTR() - cs->GetSTR()));
-    reply.WriteS16Little(static_cast<int16_t>(
-        cState->GetMAGIC() - cs->GetMAGIC()));
-    reply.WriteS16Little(static_cast<int16_t>(
-        cState->GetVIT() - cs->GetVIT()));
-    reply.WriteS16Little(static_cast<int16_t>(
-        cState->GetINTEL() - cs->GetINTEL()));
-    reply.WriteS16Little(static_cast<int16_t>(
-        cState->GetSPEED() - cs->GetSPEED()));
-    reply.WriteS16Little(static_cast<int16_t>(
-        cState->GetLUCK() - cs->GetLUCK()));
-    reply.WriteS16Little(cs->GetMaxHP());
-    reply.WriteS16Little(cs->GetMaxMP());
-    reply.WriteS16Little(static_cast<int16_t>(
-        cState->GetCLSR() - cs->GetCLSR()));
-    reply.WriteS16Little(static_cast<int16_t>(
-        cState->GetLNGR() - cs->GetLNGR()));
-    reply.WriteS16Little(static_cast<int16_t>(
-        cState->GetSPELL() - cs->GetSPELL()));
-    reply.WriteS16Little(static_cast<int16_t>(
-        cState->GetSUPPORT() - cs->GetSUPPORT()));
-    reply.WriteS16Little(static_cast<int16_t>(
-        cState->GetPDEF() - cs->GetPDEF()));
-    reply.WriteS16Little(static_cast<int16_t>(
-        cState->GetMDEF() - cs->GetMDEF()));
-    reply.WriteS16Little(cs->GetCLSR());
-    reply.WriteS16Little(cs->GetLNGR());
-    reply.WriteS16Little(cs->GetSPELL());
-    reply.WriteS16Little(cs->GetSUPPORT());
-    reply.WriteS16Little(cs->GetPDEF());
-    reply.WriteS16Little(cs->GetMDEF());
-
-    auto db = server->GetWorldDatabase();
-
-    (void)character->Update(db);
+    server->GetWorldDatabase()->QueueUpdate(character, state->GetAccountUID());
 
     server->GetZoneManager()->BroadcastPacket(client, reply);
+}
+
+bool CharacterManager::UnequipItem(const std::shared_ptr<
+    channel::ChannelClientConnection>& client,
+    const std::shared_ptr<objects::Item>& item)
+{
+    auto state = client->GetClientState();
+    auto cState = state->GetCharacterState();
+    auto character = cState->GetEntity();
+
+    auto server = mServer.lock();
+    auto def = server->GetDefinitionManager()->GetItemData(item->GetType());
+    if(def)
+    {
+        int8_t equipType = (int8_t)def->GetBasic()->GetEquipType();
+        if(equipType > 0 &&
+            character->GetEquippedItems((size_t)equipType).Get() == item)
+        {
+            auto objID = state->GetObjectID(item->GetUUID());
+            EquipItem(client, objID);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void  CharacterManager::EndTrade(const std::shared_ptr<
+    channel::ChannelClientConnection>& client, int32_t outcome)
+{
+    auto state = client->GetClientState();
+
+    // Reset the session
+    auto newSession = std::make_shared<objects::TradeSession>();
+    newSession->SetOtherCharacterState(nullptr);
+    state->SetTradeSession(newSession);
+
+    libcomp::Packet reply;
+    reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_TRADE_ENDED);
+    reply.WriteS32Little(outcome);
+    client->QueuePacket(reply);
+    SetStatusIcon(client, 0);
 }
 
 void CharacterManager::UpdateLNC(const std::shared_ptr<
@@ -1251,9 +1427,7 @@ void CharacterManager::UpdateLNC(const std::shared_ptr<
     character->SetLNC(lnc);
 
     auto server = mServer.lock();
-    auto db = server->GetWorldDatabase();
-
-    (void)character->Update(db);
+    server->GetWorldDatabase()->QueueUpdate(character, state->GetAccountUID());
 
     libcomp::Packet reply;
     reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_LNC_POINTS);
@@ -1274,11 +1448,15 @@ std::shared_ptr<objects::Demon> CharacterManager::ContractDemon(
         return nullptr;
     }
 
+    auto comp = character->GetCOMP().Get();
+    auto progress = character->GetProgress();
+
     //Find the next empty slot to add the demon to
     int8_t compSlot = -1;
-    for(size_t i = 0; i < 10; i++)
+    size_t maxCompSlots = (size_t)progress->GetMaxCOMPSlots();
+    for(size_t i = 0; i < maxCompSlots; i++)
     {
-        if(character->GetCOMP(i).IsNull())
+        if(comp->GetDemons(i).IsNull())
         {
             compSlot = (int8_t)i;
             break;
@@ -1317,22 +1495,25 @@ std::shared_ptr<objects::Demon> CharacterManager::ContractDemon(
     }
 
     d->SetLocked(false);
-    d->SetAccount(character->GetAccount());
-    d->SetCharacter(character);
+    d->SetDemonBox(comp);
+    d->SetBoxSlot(compSlot);
 
     d->Register(d);
     ds->Register(ds);
     d->SetCoreStats(ds);
     ds->SetEntity(std::dynamic_pointer_cast<
         libcomp::PersistentObject>(d));
-    character->SetCOMP((size_t)compSlot, d);
+
+    comp->SetDemons((size_t)compSlot, d);
+
+    auto dbChanges = libcomp::DatabaseChangeSet::Create(
+        character->GetAccount().GetUUID());
+    dbChanges->Insert(d);
+    dbChanges->Insert(ds);
+    dbChanges->Update(comp);
 
     auto server = mServer.lock();
-    auto db = server->GetWorldDatabase();
-    if(!ds->Insert(db) || !d->Insert(db))
-    {
-        return nullptr;
-    }
+    server->GetWorldDatabase()->QueueChangeSet(dbChanges);
 
     return d;
 }
@@ -1402,7 +1583,7 @@ void CharacterManager::ExperienceGain(const std::shared_ptr<
             reply.WriteS32Little(entityID);
             reply.WriteS8(level);
             reply.WriteS64Little(state->GetObjectID(demon->GetUUID()));
-            GetEntityStatsPacketData(reply, stats, dState, true);
+            GetEntityStatsPacketData(reply, stats, dState, 1);
 
             size_t newSkillCount = newSkills.size();
             reply.WriteU32Little(static_cast<uint32_t>(newSkillCount));
@@ -1445,6 +1626,8 @@ void CharacterManager::ExperienceGain(const std::shared_ptr<
 
     /// @todo: send to all players in the zone?
     client->SendPacket(reply);
+
+    server->GetWorldDatabase()->QueueUpdate(stats, state->GetAccountUID());
 }
 
 void CharacterManager::LevelUp(const std::shared_ptr<
@@ -1515,6 +1698,7 @@ void CharacterManager::UpdateExpertise(const std::shared_ptr<
     }
 
     std::list<std::pair<int8_t, int32_t>> updated;
+    auto dbChanges = libcomp::DatabaseChangeSet::Create(state->GetAccountUID());
     for(auto expertGrowth : skill->GetExpertGrowth())
     {
         auto expertise = character->GetExpertises(expertGrowth->GetExpertiseID()).Get();
@@ -1560,6 +1744,7 @@ void CharacterManager::UpdateExpertise(const std::shared_ptr<
 
         expertise->SetPoints(points);
         updated.push_back(std::pair<int8_t, int32_t>((int8_t)expDef->GetID(), points));
+        dbChanges->Update(expertise);
 
         int8_t newRank = (int8_t)((float)points * 0.0001f);
         if(currentRank != newRank)
@@ -1587,23 +1772,327 @@ void CharacterManager::UpdateExpertise(const std::shared_ptr<
         }
 
         client->SendPacket(reply);
+
+        server->GetWorldDatabase()->QueueChangeSet(dbChanges);
+    }
+}
+
+bool CharacterManager::LearnSkill(const std::shared_ptr<channel::ChannelClientConnection>& client,
+    int32_t entityID, uint32_t skillID)
+{
+    auto server = mServer.lock();
+    auto definitionManager = server->GetDefinitionManager();
+    auto state = client->GetClientState();
+    auto eState = state->GetEntityState(entityID);
+
+    auto def = definitionManager->GetSkillData(skillID);
+    if(nullptr == eState || nullptr == def)
+    {
+        return false;
+    }
+
+    auto dState = state->GetDemonState();
+    if(eState == dState)
+    {
+        // Check if the skill is available anywhere for the demon
+        auto demon = dState->GetEntity();
+        auto learnedSkills = demon->GetLearnedSkills();
+        auto inheritedSkills = demon->GetInheritedSkills();
+
+        std::list<uint32_t> skills = demon->GetAcquiredSkills();
+        for(auto s : learnedSkills)
+        {
+            skills.push_back(s);
+        }
+
+        for(auto s : inheritedSkills)
+        {
+            if(!s.IsNull())
+            {
+                skills.push_back(s->GetSkill());
+            }
+        }
+        
+        if(std::find(skills.begin(), skills.end(), skillID) != skills.end())
+        {
+            // Skill already exists
+            return true;
+        }
+        
+        demon->AppendAcquiredSkills(skillID);
+
+        SendPartnerData(client);
+
+        // Learning a skill outside of leveling or inheritence is not natively
+        // supported so this is a hack to stop the demon from depoping
+        //server->GetZoneManager()->ShowEntity(client, entityID);
+
+        server->GetWorldDatabase()->QueueUpdate(demon, state->GetAccountUID());
+    }
+    else
+    {
+        // Check if the skill has already been learned
+        auto character = state->GetCharacterState()->GetEntity();
+        auto skills = character->GetLearnedSkills();
+        
+        if(std::find(skills.begin(), skills.end(), skillID) != skills.end())
+        {
+            // Skill already exists
+            return true;
+        }
+
+        character->AppendLearnedSkills(skillID);
+
+        libcomp::Packet reply;
+        reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_LEARN_SKILL);
+        reply.WriteS32Little(entityID);
+        reply.WriteU32Little(skillID);
+
+        client->SendPacket(reply);
+
+        server->GetWorldDatabase()->QueueUpdate(character, state->GetAccountUID());
+    }
+
+    return true;
+}
+
+bool CharacterManager::UpdateMapFlags(const std::shared_ptr<
+    channel::ChannelClientConnection>& client, size_t mapIndex, uint8_t mapValue)
+{
+    auto state = client->GetClientState();
+    auto cState = state->GetCharacterState();
+    auto character = cState->GetEntity();
+    auto progress = character->GetProgress().Get();
+
+    if(mapIndex >= progress->GetMaps().size())
+    {
+        return false;
+    }
+
+    auto oldValue = progress->GetMaps(mapIndex);
+    uint8_t newValue = static_cast<uint8_t>(oldValue | mapValue);
+
+    if(oldValue != newValue)
+    {
+        progress->SetMaps((size_t)mapIndex, newValue);
+
+        SendMapFlags(client);
+
+        mServer.lock()->GetWorldDatabase()->QueueUpdate(progress, state->GetAccountUID());
+    }
+
+    return true;
+}
+
+void CharacterManager::SendMapFlags(const std::shared_ptr<ChannelClientConnection>& client)
+{
+    auto state = client->GetClientState();
+    auto cState = state->GetCharacterState();
+    auto character = cState->GetEntity();
+    auto maps = character->GetProgress()->GetMaps();
+
+    libcomp::Packet reply;
+    reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_MAP_FLAG);
+    reply.WriteU16Little((uint16_t)maps.size());
+    reply.WriteArray(&maps, (uint32_t)maps.size());
+
+    client->SendPacket(reply);
+}
+
+bool CharacterManager::UpdateStatusEffects(const std::shared_ptr<
+    ActiveEntityState>& eState, bool queueSave)
+{
+    auto cState = std::dynamic_pointer_cast<CharacterState>(eState);
+    auto dState = std::dynamic_pointer_cast<DemonState>(eState);
+    if(!cState && (!dState || !dState->GetEntity()))
+    {
+        return false;
+    }
+
+    auto server = mServer.lock();
+    auto definitionManager = server->GetDefinitionManager();
+
+    auto changes = libcomp::DatabaseChangeSet::Create(cState
+            ? cState->GetEntity()->GetAccount().GetUUID()
+            : dState->GetEntity()->GetDemonBox()->GetAccount().GetUUID());
+
+    auto effectMap = eState->GetStatusEffects();
+    std::unordered_map<uint32_t, bool> effectStates;
+    for(auto ePair : effectMap)
+    {
+        // Default to insert
+        effectStates[ePair.first] = true;
+    }
+
+    auto previous = cState
+        ? cState->GetEntity()->GetStatusEffects()
+        : dState->GetEntity()->GetStatusEffects();
+    for(auto p : previous)
+    {
+        uint32_t effectType = p->GetEffect();
+        if(effectStates.find(effectType) == effectStates.end())
+        {
+            // Delete
+            changes->Delete(p.Get());
+        }
+        else
+        {
+            // Update
+            effectStates[effectType] = false;
+        }
+    }
+
+    std::set<uint32_t> removed;
+    std::list<libcomp::ObjectReference<objects::StatusEffect>> updated;
+    for(auto ePair : effectStates)
+    {
+        auto effectType = ePair.first;
+        auto effect = effectMap[effectType];
+
+        // If the effect can expire but somehow was not removed yet, remove it
+        auto def = definitionManager->GetStatusData(effectType);
+        bool expire = def->GetCancel()->GetDuration() > 0
+            && effect->GetExpiration() == 0;
+
+        if(expire)
+        {
+            removed.insert(effectType);
+        }
+        else
+        {
+            updated.push_back(effect);
+        }
+
+        if(!ePair.second)
+        {
+            if(expire)
+            {
+                changes->Delete(effect);
+            }
+            else
+            {
+                changes->Update(effect);
+            }
+        }
+        else if(!expire)
+        {
+            changes->Insert(effect);
+        }
+    }
+
+    if(removed.size() > 0)
+    {
+        eState->ExpireStatusEffects(removed);
+    }
+
+    if(cState)
+    {
+        cState->GetEntity()->SetStatusEffects(updated);
+        changes->Update(cState->GetEntity());
+    }
+    else
+    {
+        dState->GetEntity()->SetStatusEffects(updated);
+        changes->Update(dState->GetEntity());
+    }
+
+    auto db = server->GetWorldDatabase();
+    if(queueSave)
+    {
+        return db->QueueChangeSet(changes);
+    }
+    else
+    {
+        return db->ProcessChangeSet(changes);
+    }
+}
+
+void CharacterManager::CancelStatusEffects(const std::shared_ptr<
+    ChannelClientConnection>& client, uint8_t cancelFlags)
+{
+    auto state = client->GetClientState();
+    auto cState = state->GetCharacterState();
+    auto dState = state->GetDemonState();
+
+    cState->CancelStatusEffects(cancelFlags);
+    dState->CancelStatusEffects(cancelFlags);
+
+    auto definitionManager = mServer.lock()->GetDefinitionManager();
+    for(auto demon : cState->GetEntity()->GetCOMP()->GetDemons())
+    {
+        if(!demon.Get() || demon.Get() == dState->GetEntity()) continue;
+
+        auto effects = demon->GetStatusEffects();
+
+        std::set<size_t> cancelled;
+        for(auto effect : effects)
+        {
+            auto cancel = definitionManager->
+                GetStatusData(effect->GetEffect())->GetCancel();
+            if(cancel->GetCancelTypes() & cancelFlags)
+            {
+                cancelled.insert(effect->GetEffect());
+            }
+        }
+
+        effects.remove_if([cancelled]
+            (libcomp::ObjectReference<objects::StatusEffect>& effect)
+            {
+                return cancelled.find(effect->GetEffect())
+                    != cancelled.end();
+            });
+
+        if(cancelled.size() > 0)
+        {
+            demon->SetStatusEffects(effects);
+        }
+    }
+}
+
+void CharacterManager::UpdateWorldDisplayState(
+    const std::set<std::shared_ptr<ActiveEntityState>>& entities)
+{
+    if(entities.size() > 0)
+    {
+        auto worldConnection = mServer.lock()->GetManagerConnection()
+            ->GetWorldConnection();
+        for(auto entity : entities)
+        {
+            auto entityClientState = ClientState::GetEntityClientState(
+                entity->GetEntityID());
+            if(!entityClientState || !entityClientState->GetPartyID()) continue;
+
+            libcomp::Packet packet;
+            if(entity->GetEntityType() ==
+                objects::EntityStateObject::EntityType_t::PARTNER_DEMON)
+            {
+                entityClientState->GetPartyDemonPacket(packet);
+            }
+            else
+            {
+                entityClientState->GetPartyCharacterPacket(packet);
+            }
+            worldConnection->QueuePacket(packet);
+        }
+
+        worldConnection->FlushOutgoing();
     }
 }
 
 void CharacterManager::CalculateCharacterBaseStats(const std::shared_ptr<objects::EntityStats>& cs)
 {
-    std::unordered_map<uint8_t, int16_t> stats = GetCharacterBaseStatMap(cs);
+    auto stats = GetCharacterBaseStatMap(cs);
 
     CalculateDependentStats(stats, cs->GetLevel(), false);
 
-    cs->SetMaxHP(stats[libcomp::CORRECT_MAXHP]);
-    cs->SetMaxMP(stats[libcomp::CORRECT_MAXMP]);
-    cs->SetCLSR(stats[libcomp::CORRECT_CLSR]);
-    cs->SetLNGR(stats[libcomp::CORRECT_LNGR]);
-    cs->SetSPELL(stats[libcomp::CORRECT_SPELL]);
-    cs->SetSUPPORT(stats[libcomp::CORRECT_SUPPORT]);
-    cs->SetPDEF(stats[libcomp::CORRECT_PDEF]);
-    cs->SetMDEF(stats[libcomp::CORRECT_MDEF]);
+    cs->SetMaxHP(stats[CorrectTbl::HP_MAX]);
+    cs->SetMaxMP(stats[CorrectTbl::MP_MAX]);
+    cs->SetCLSR(stats[CorrectTbl::CLSR]);
+    cs->SetLNGR(stats[CorrectTbl::LNGR]);
+    cs->SetSPELL(stats[CorrectTbl::SPELL]);
+    cs->SetSUPPORT(stats[CorrectTbl::SUPPORT]);
+    cs->SetPDEF(stats[CorrectTbl::PDEF]);
+    cs->SetMDEF(stats[CorrectTbl::MDEF]);
 }
 
 void CharacterManager::CalculateDemonBaseStats(const std::shared_ptr<
@@ -1632,21 +2121,21 @@ void CharacterManager::CalculateDemonBaseStats(const std::shared_ptr<
 	 * D | 85, 89, 93, 97
 	 */
 
-    std::unordered_map<uint8_t, int16_t> stats;
-    stats[libcomp::CORRECT_STR] = battleData->GetCorrect(libcomp::CORRECT_STR);
-    stats[libcomp::CORRECT_MAGIC] = battleData->GetCorrect(libcomp::CORRECT_MAGIC);
-    stats[libcomp::CORRECT_VIT] = battleData->GetCorrect(libcomp::CORRECT_VIT);
-    stats[libcomp::CORRECT_INTEL] = battleData->GetCorrect(libcomp::CORRECT_INTEL);
-    stats[libcomp::CORRECT_SPEED] = battleData->GetCorrect(libcomp::CORRECT_SPEED);
-    stats[libcomp::CORRECT_LUCK] = battleData->GetCorrect(libcomp::CORRECT_LUCK);
-    stats[libcomp::CORRECT_MAXHP] = battleData->GetCorrect(libcomp::CORRECT_MAXHP);
-    stats[libcomp::CORRECT_MAXMP] = battleData->GetCorrect(libcomp::CORRECT_MAXMP);
-    stats[libcomp::CORRECT_CLSR] = battleData->GetCorrect(libcomp::CORRECT_CLSR);
-    stats[libcomp::CORRECT_LNGR] = battleData->GetCorrect(libcomp::CORRECT_LNGR);
-    stats[libcomp::CORRECT_SPELL] = battleData->GetCorrect(libcomp::CORRECT_SPELL);
-    stats[libcomp::CORRECT_SUPPORT] = battleData->GetCorrect(libcomp::CORRECT_SUPPORT);
-    stats[libcomp::CORRECT_PDEF] = battleData->GetCorrect(libcomp::CORRECT_PDEF);
-    stats[libcomp::CORRECT_MDEF] = battleData->GetCorrect(libcomp::CORRECT_MDEF);
+    libcomp::EnumMap<CorrectTbl, int16_t> stats;
+    stats[CorrectTbl::STR] = battleData->GetCorrect((size_t)CorrectTbl::STR);
+    stats[CorrectTbl::MAGIC] = battleData->GetCorrect((size_t)CorrectTbl::MAGIC);
+    stats[CorrectTbl::VIT] = battleData->GetCorrect((size_t)CorrectTbl::VIT);
+    stats[CorrectTbl::INT] = battleData->GetCorrect((size_t)CorrectTbl::INT);
+    stats[CorrectTbl::SPEED] = battleData->GetCorrect((size_t)CorrectTbl::SPEED);
+    stats[CorrectTbl::LUCK] = battleData->GetCorrect((size_t)CorrectTbl::LUCK);
+    stats[CorrectTbl::HP_MAX] = battleData->GetCorrect((size_t)CorrectTbl::HP_MAX);
+    stats[CorrectTbl::MP_MAX] = battleData->GetCorrect((size_t)CorrectTbl::MP_MAX);
+    stats[CorrectTbl::CLSR] = battleData->GetCorrect((size_t)CorrectTbl::CLSR);
+    stats[CorrectTbl::LNGR] = battleData->GetCorrect((size_t)CorrectTbl::LNGR);
+    stats[CorrectTbl::SPELL] = battleData->GetCorrect((size_t)CorrectTbl::SPELL);
+    stats[CorrectTbl::SUPPORT] = battleData->GetCorrect((size_t)CorrectTbl::SUPPORT);
+    stats[CorrectTbl::PDEF] = battleData->GetCorrect((size_t)CorrectTbl::PDEF);
+    stats[CorrectTbl::MDEF] = battleData->GetCorrect((size_t)CorrectTbl::MDEF);
 
     switch(boostStage)
     {
@@ -1690,110 +2179,151 @@ void CharacterManager::CalculateDemonBaseStats(const std::shared_ptr<
         }
     }
 
-    ds->SetMaxHP(stats[libcomp::CORRECT_MAXHP]);
-    ds->SetMaxMP(stats[libcomp::CORRECT_MAXMP]);
-    ds->SetHP(stats[libcomp::CORRECT_MAXHP]);
-    ds->SetMP(stats[libcomp::CORRECT_MAXMP]);
-    ds->SetSTR(stats[libcomp::CORRECT_STR]);
-    ds->SetMAGIC(stats[libcomp::CORRECT_MAGIC]);
-    ds->SetVIT(stats[libcomp::CORRECT_VIT]);
-    ds->SetINTEL(stats[libcomp::CORRECT_INTEL]);
-    ds->SetSPEED(stats[libcomp::CORRECT_SPEED]);
-    ds->SetLUCK(stats[libcomp::CORRECT_LUCK]);
-    ds->SetCLSR(stats[libcomp::CORRECT_CLSR]);
-    ds->SetLNGR(stats[libcomp::CORRECT_LNGR]);
-    ds->SetSPELL(stats[libcomp::CORRECT_SPELL]);
-    ds->SetSUPPORT(stats[libcomp::CORRECT_SUPPORT]);
-    ds->SetPDEF(stats[libcomp::CORRECT_PDEF]);
-    ds->SetMDEF(stats[libcomp::CORRECT_MDEF]);
+    ds->SetMaxHP(stats[CorrectTbl::HP_MAX]);
+    ds->SetMaxMP(stats[CorrectTbl::MP_MAX]);
+    ds->SetHP(stats[CorrectTbl::HP_MAX]);
+    ds->SetMP(stats[CorrectTbl::MP_MAX]);
+    ds->SetSTR(stats[CorrectTbl::STR]);
+    ds->SetMAGIC(stats[CorrectTbl::MAGIC]);
+    ds->SetVIT(stats[CorrectTbl::VIT]);
+    ds->SetINTEL(stats[CorrectTbl::INT]);
+    ds->SetSPEED(stats[CorrectTbl::SPEED]);
+    ds->SetLUCK(stats[CorrectTbl::LUCK]);
+    ds->SetCLSR(stats[CorrectTbl::CLSR]);
+    ds->SetLNGR(stats[CorrectTbl::LNGR]);
+    ds->SetSPELL(stats[CorrectTbl::SPELL]);
+    ds->SetSUPPORT(stats[CorrectTbl::SUPPORT]);
+    ds->SetPDEF(stats[CorrectTbl::PDEF]);
+    ds->SetMDEF(stats[CorrectTbl::MDEF]);
 }
 
-std::unordered_map<uint8_t, int16_t> CharacterManager::GetCharacterBaseStatMap(
+libcomp::EnumMap<CorrectTbl, int16_t> CharacterManager::GetCharacterBaseStatMap(
     const std::shared_ptr<objects::EntityStats>& cs)
 {
-    std::unordered_map<uint8_t, int16_t> stats;
-    stats[libcomp::CORRECT_STR] = cs->GetSTR();
-    stats[libcomp::CORRECT_MAGIC] = cs->GetMAGIC();
-    stats[libcomp::CORRECT_VIT] = cs->GetVIT();
-    stats[libcomp::CORRECT_INTEL] = cs->GetINTEL();
-    stats[libcomp::CORRECT_SPEED] = cs->GetSPEED();
-    stats[libcomp::CORRECT_LUCK] = cs->GetLUCK();
-    stats[libcomp::CORRECT_MAXHP] = 70;
-    stats[libcomp::CORRECT_MAXMP] = 10;
-    stats[libcomp::CORRECT_CLSR] = 0;
-    stats[libcomp::CORRECT_LNGR] = 0;
-    stats[libcomp::CORRECT_SPELL] = 0;
-    stats[libcomp::CORRECT_SUPPORT] = 0;
-    stats[libcomp::CORRECT_PDEF] = 0;
-    stats[libcomp::CORRECT_MDEF] = 0;
+    libcomp::EnumMap<CorrectTbl, int16_t> stats;
+    stats[CorrectTbl::STR] = cs->GetSTR();
+    stats[CorrectTbl::MAGIC] = cs->GetMAGIC();
+    stats[CorrectTbl::VIT] = cs->GetVIT();
+    stats[CorrectTbl::INT] = cs->GetINTEL();
+    stats[CorrectTbl::SPEED] = cs->GetSPEED();
+    stats[CorrectTbl::LUCK] = cs->GetLUCK();
+    stats[CorrectTbl::HP_MAX] = 70;
+    stats[CorrectTbl::MP_MAX] = 10;
+    stats[CorrectTbl::CLSR] = 0;
+    stats[CorrectTbl::LNGR] = 0;
+    stats[CorrectTbl::SPELL] = 0;
+    stats[CorrectTbl::SUPPORT] = 0;
+    stats[CorrectTbl::PDEF] = 0;
+    stats[CorrectTbl::MDEF] = 0;
+    stats[CorrectTbl::HP_REGEN] = 1;
+    stats[CorrectTbl::MP_REGEN] = 1;
     return stats;
 }
 
 void CharacterManager::CalculateDependentStats(
-    std::unordered_map<uint8_t, int16_t>& stats, int8_t level, bool isDemon)
+    libcomp::EnumMap<CorrectTbl, int16_t>& stats, int8_t level, bool isDemon)
 {
     /// @todo: fix: close but not quite right
     if(isDemon)
     {
         // Round up each part
-        stats[libcomp::CORRECT_MAXHP] = (int16_t)(stats[libcomp::CORRECT_MAXHP] +
-            (int16_t)ceill(stats[libcomp::CORRECT_MAXHP] * 0.03 * level) +
-            (int16_t)ceill(stats[libcomp::CORRECT_STR] * 0.3) +
-            (int16_t)ceill(((stats[libcomp::CORRECT_MAXHP] * 0.01) + 0.5) * stats[libcomp::CORRECT_VIT]));
-        stats[libcomp::CORRECT_MAXMP] = (int16_t)(stats[libcomp::CORRECT_MAXMP] +
-            (int16_t)ceill(stats[libcomp::CORRECT_MAXMP] * 0.03 * level) +
-            (int16_t)ceill(stats[libcomp::CORRECT_MAGIC] * 0.3) +
-            (int16_t)ceill(((stats[libcomp::CORRECT_MAXMP] * 0.01) + 0.5) * stats[libcomp::CORRECT_INTEL]));
+        stats[CorrectTbl::HP_MAX] = (int16_t)(stats[CorrectTbl::HP_MAX] +
+            (int16_t)ceill(stats[CorrectTbl::HP_MAX] * 0.03 * level) +
+            (int16_t)ceill(stats[CorrectTbl::STR] * 0.3) +
+            (int16_t)ceill(((stats[CorrectTbl::HP_MAX] * 0.01) + 0.5) * stats[CorrectTbl::VIT]));
+        stats[CorrectTbl::MP_MAX] = (int16_t)(stats[CorrectTbl::MP_MAX] +
+            (int16_t)ceill(stats[CorrectTbl::MP_MAX] * 0.03 * level) +
+            (int16_t)ceill(stats[CorrectTbl::MAGIC] * 0.3) +
+            (int16_t)ceill(((stats[CorrectTbl::MP_MAX] * 0.01) + 0.5) * stats[CorrectTbl::INT]));
 
         // Round the result, adjusting by 0.5
-        stats[libcomp::CORRECT_CLSR] = (int16_t)(stats[libcomp::CORRECT_CLSR] +
-            (int16_t)roundl(((stats[libcomp::CORRECT_STR]) * 0.5) + 0.5 + (level * 0.1)));
-        stats[libcomp::CORRECT_LNGR] = (int16_t)(stats[libcomp::CORRECT_LNGR] +
-            (int16_t)roundl(((stats[libcomp::CORRECT_SPEED]) * 0.5) + 0.5 + (level * 0.1)));
-        stats[libcomp::CORRECT_SPELL] = (int16_t)(stats[libcomp::CORRECT_SPELL] +
-            (int16_t)roundl(((stats[libcomp::CORRECT_MAGIC]) * 0.5) + 0.5 + (level * 0.1)));
-        stats[libcomp::CORRECT_SUPPORT] = (int16_t)(stats[libcomp::CORRECT_SUPPORT] +
-            (int16_t)roundl(((stats[libcomp::CORRECT_INTEL]) * 0.5) + 0.5 + (level * 0.1)));
-        stats[libcomp::CORRECT_PDEF] = (int16_t)(stats[libcomp::CORRECT_PDEF] +
-            (int16_t)roundl(((stats[libcomp::CORRECT_VIT]) * 0.1) + 0.5 + (level * 0.1)));
-        stats[libcomp::CORRECT_MDEF] = (int16_t)(stats[libcomp::CORRECT_MDEF] +
-            (int16_t)roundl(((stats[libcomp::CORRECT_INTEL]) * 0.1) + 0.5 + (level * 0.1)));
+        stats[CorrectTbl::CLSR] = (int16_t)(stats[CorrectTbl::CLSR] +
+            (int16_t)roundl((stats[CorrectTbl::STR] * 0.5) + 0.5 + (level * 0.1)));
+        stats[CorrectTbl::LNGR] = (int16_t)(stats[CorrectTbl::LNGR] +
+            (int16_t)roundl((stats[CorrectTbl::SPEED] * 0.5) + 0.5 + (level * 0.1)));
+        stats[CorrectTbl::SPELL] = (int16_t)(stats[CorrectTbl::SPELL] +
+            (int16_t)roundl((stats[CorrectTbl::MAGIC] * 0.5) + 0.5 + (level * 0.1)));
+        stats[CorrectTbl::SUPPORT] = (int16_t)(stats[CorrectTbl::SUPPORT] +
+            (int16_t)roundl((stats[CorrectTbl::INT] * 0.5) + 0.5 + (level * 0.1)));
+        stats[CorrectTbl::PDEF] = (int16_t)(stats[CorrectTbl::PDEF] +
+            (int16_t)roundl((stats[CorrectTbl::VIT] * 0.1) + 0.5 + (level * 0.1)));
+        stats[CorrectTbl::MDEF] = (int16_t)(stats[CorrectTbl::MDEF] +
+            (int16_t)roundl((stats[CorrectTbl::INT] * 0.1) + 0.5 + (level * 0.1)));
     }
     else
     {
         // Round each part
-        stats[libcomp::CORRECT_MAXHP] = (int16_t)(stats[libcomp::CORRECT_MAXHP] +
-            (int16_t)roundl(stats[libcomp::CORRECT_MAXHP] * 0.03 * level) +
-            (int16_t)roundl(stats[libcomp::CORRECT_STR] * 0.3) +
-            (int16_t)roundl(((stats[libcomp::CORRECT_MAXHP] * 0.01) + 0.5) * stats[libcomp::CORRECT_VIT]));
-        stats[libcomp::CORRECT_MAXMP] = (int16_t)(stats[libcomp::CORRECT_MAXMP] +
-            (int16_t)roundl(stats[libcomp::CORRECT_MAXMP] * 0.03 * level) +
-            (int16_t)roundl(stats[libcomp::CORRECT_MAGIC] * 0.3) +
-            (int16_t)roundl(((stats[libcomp::CORRECT_MAXMP] * 0.01) + 0.5) * stats[libcomp::CORRECT_INTEL]));
+        stats[CorrectTbl::HP_MAX] = (int16_t)(stats[CorrectTbl::HP_MAX] +
+            (int16_t)roundl(stats[CorrectTbl::HP_MAX] * 0.03 * level) +
+            (int16_t)roundl(stats[CorrectTbl::STR] * 0.3) +
+            (int16_t)roundl(((stats[CorrectTbl::HP_MAX] * 0.01) + 0.5) * stats[CorrectTbl::VIT]));
+        stats[CorrectTbl::MP_MAX] = (int16_t)(stats[CorrectTbl::MP_MAX] +
+            (int16_t)roundl(stats[CorrectTbl::MP_MAX] * 0.03 * level) +
+            (int16_t)roundl(stats[CorrectTbl::MAGIC] * 0.3) +
+            (int16_t)roundl(((stats[CorrectTbl::MP_MAX] * 0.01) + 0.5) * stats[CorrectTbl::INT]));
 
         // Round the results down
-        stats[libcomp::CORRECT_CLSR] = (int16_t)(stats[libcomp::CORRECT_CLSR] +
-            (int16_t)floorl(((stats[libcomp::CORRECT_STR]) * 0.5) + (level * 0.1)));
-        stats[libcomp::CORRECT_LNGR] = (int16_t)(stats[libcomp::CORRECT_LNGR] +
-            (int16_t)floorl(((stats[libcomp::CORRECT_SPEED]) * 0.5) + (level * 0.1)));
-        stats[libcomp::CORRECT_SPELL] = (int16_t)(stats[libcomp::CORRECT_SPELL] +
-            (int16_t)floorl(((stats[libcomp::CORRECT_MAGIC]) * 0.5) + (level * 0.1)));
-        stats[libcomp::CORRECT_SUPPORT] = (int16_t)(stats[libcomp::CORRECT_SUPPORT] +
-            (int16_t)floorl(((stats[libcomp::CORRECT_INTEL]) * 0.5) + (level * 0.1)));
-        stats[libcomp::CORRECT_PDEF] = (int16_t)(stats[libcomp::CORRECT_PDEF] +
-            (int16_t)floorl(((stats[libcomp::CORRECT_VIT]) * 0.1) + (level * 0.1)));
-        stats[libcomp::CORRECT_MDEF] = (int16_t)(stats[libcomp::CORRECT_MDEF] +
-            (int16_t)floorl(((stats[libcomp::CORRECT_INTEL]) * 0.1) + (level * 0.1)));
+        stats[CorrectTbl::CLSR] = (int16_t)(stats[CorrectTbl::CLSR] +
+            (int16_t)floorl((stats[CorrectTbl::STR] * 0.5) + (level * 0.1)));
+        stats[CorrectTbl::LNGR] = (int16_t)(stats[CorrectTbl::LNGR] +
+            (int16_t)floorl((stats[CorrectTbl::SPEED] * 0.5) + (level * 0.1)));
+        stats[CorrectTbl::SPELL] = (int16_t)(stats[CorrectTbl::SPELL] +
+            (int16_t)floorl((stats[CorrectTbl::MAGIC] * 0.5) + (level * 0.1)));
+        stats[CorrectTbl::SUPPORT] = (int16_t)(stats[CorrectTbl::SUPPORT] +
+            (int16_t)floorl((stats[CorrectTbl::INT] * 0.5) + (level * 0.1)));
+        stats[CorrectTbl::PDEF] = (int16_t)(stats[CorrectTbl::PDEF] +
+            (int16_t)floorl((stats[CorrectTbl::VIT] * 0.1) + (level * 0.1)));
+        stats[CorrectTbl::MDEF] = (int16_t)(stats[CorrectTbl::MDEF] +
+            (int16_t)floorl((stats[CorrectTbl::INT] * 0.1) + (level * 0.1)));
+    }
+
+    // Always round down
+    stats[CorrectTbl::HP_REGEN] = (int16_t)(stats[CorrectTbl::HP_REGEN] +
+        (int16_t)floorl(((stats[CorrectTbl::VIT] * 3) + stats[CorrectTbl::HP_MAX]) * 0.01));
+    stats[CorrectTbl::MP_REGEN] = (int16_t)(stats[CorrectTbl::MP_REGEN] +
+        (int16_t)floorl(((stats[CorrectTbl::INT] * 3) + stats[CorrectTbl::MP_MAX]) * 0.01));
+}
+
+void CharacterManager::AdjustStatBounds(libcomp::EnumMap<CorrectTbl, int16_t>& stats)
+{
+    static libcomp::EnumMap<CorrectTbl, int16_t> minStats =
+        {
+            { CorrectTbl::HP_MAX, 1 },
+            { CorrectTbl::MP_MAX, 0 },
+            { CorrectTbl::STR, 1 },
+            { CorrectTbl::MAGIC, 1 },
+            { CorrectTbl::VIT, 1 },
+            { CorrectTbl::INT, 1 },
+            { CorrectTbl::SPEED, 1 },
+            { CorrectTbl::LUCK, 1 },
+            { CorrectTbl::CLSR, 0 },
+            { CorrectTbl::LNGR, 0 },
+            { CorrectTbl::SPELL, 0 },
+            { CorrectTbl::SUPPORT, 0 },
+            { CorrectTbl::PDEF, 0 },
+            { CorrectTbl::MDEF, 0 },
+            { CorrectTbl::HP_REGEN, 0 },
+            { CorrectTbl::MP_REGEN, 0 }
+        };
+
+    for(auto pair : minStats)
+    {
+        auto it = stats.find(pair.first);
+        if(it != stats.end() && it->second < pair.second)
+        {
+            stats[pair.first] = pair.second;
+        }
     }
 }
 
-void CharacterManager::GetCOMPSlotPacketData(libcomp::Packet& p,
-    const std::shared_ptr<channel::ChannelClientConnection>& client, size_t slot)
+void CharacterManager::GetDemonPacketData(libcomp::Packet& p,
+    const std::shared_ptr<channel::ChannelClientConnection>& client,
+    const std::shared_ptr<objects::DemonBox>& box, int8_t slot)
 {
     auto state = client->GetClientState();
-    auto demon = state->GetCharacterState()->GetEntity()->GetCOMP(slot).Get();
+    auto demon = box->GetDemons((size_t)slot).Get();
 
-    p.WriteS8(static_cast<int8_t>(slot)); // Slot
+    p.WriteS8(slot);
     p.WriteS64Little(nullptr != demon
         ? state->GetObjectID(demon->GetUUID()) : -1);
 
@@ -1828,70 +2358,136 @@ void CharacterManager::GetCOMPSlotPacketData(libcomp::Packet& p,
 void CharacterManager::GetEntityStatsPacketData(libcomp::Packet& p,
     const std::shared_ptr<objects::EntityStats>& coreStats,
     const std::shared_ptr<ActiveEntityState>& state,
-    bool boostFormat)
+    uint8_t format)
 {
     auto baseOnly = state == nullptr;
 
-    p.WriteS16Little(coreStats->GetSTR());
-    p.WriteS16Little(static_cast<int16_t>(
-        baseOnly ? 0 : (state->GetSTR() - coreStats->GetSTR())));
-    p.WriteS16Little(coreStats->GetMAGIC());
-    p.WriteS16Little(static_cast<int16_t>(
-        baseOnly ? 0 : (state->GetMAGIC() - coreStats->GetMAGIC())));
-    p.WriteS16Little(coreStats->GetVIT());
-    p.WriteS16Little(static_cast<int16_t>(
-        baseOnly ? 0 : (state->GetVIT() - coreStats->GetVIT())));
-    p.WriteS16Little(coreStats->GetINTEL());
-    p.WriteS16Little(static_cast<int16_t>(
-        baseOnly ? 0 : (state->GetINTEL() - coreStats->GetINTEL())));
-    p.WriteS16Little(coreStats->GetSPEED());
-    p.WriteS16Little(static_cast<int16_t>(
-        baseOnly ? 0 : (state->GetSPEED() - coreStats->GetSPEED())));
-    p.WriteS16Little(coreStats->GetLUCK());
-    p.WriteS16Little(static_cast<int16_t>(
-        baseOnly ? 0 : (state->GetLUCK() - coreStats->GetLUCK())));
-
-    if(boostFormat)
+    switch(format)
     {
-        p.WriteS16Little(static_cast<int16_t>(
-            baseOnly ? coreStats->GetMaxHP() : state->GetMaxHP()));
-        p.WriteS16Little(static_cast<int16_t>(
-            baseOnly ? coreStats->GetMaxMP() : state->GetMaxMP()));
-    }
+    case 0:
+    case 1:
+        {
+            p.WriteS16Little(coreStats->GetSTR());
+            p.WriteS16Little(static_cast<int16_t>(
+                baseOnly ? 0 : (state->GetSTR() - coreStats->GetSTR())));
+            p.WriteS16Little(coreStats->GetMAGIC());
+            p.WriteS16Little(static_cast<int16_t>(
+                baseOnly ? 0 : (state->GetMAGIC() - coreStats->GetMAGIC())));
+            p.WriteS16Little(coreStats->GetVIT());
+            p.WriteS16Little(static_cast<int16_t>(
+                baseOnly ? 0 : (state->GetVIT() - coreStats->GetVIT())));
+            p.WriteS16Little(coreStats->GetINTEL());
+            p.WriteS16Little(static_cast<int16_t>(
+                baseOnly ? 0 : (state->GetINTEL() - coreStats->GetINTEL())));
+            p.WriteS16Little(coreStats->GetSPEED());
+            p.WriteS16Little(static_cast<int16_t>(
+                baseOnly ? 0 : (state->GetSPEED() - coreStats->GetSPEED())));
+            p.WriteS16Little(coreStats->GetLUCK());
+            p.WriteS16Little(static_cast<int16_t>(
+                baseOnly ? 0 : (state->GetLUCK() - coreStats->GetLUCK())));
 
-    p.WriteS16Little(coreStats->GetCLSR());
-    p.WriteS16Little(static_cast<int16_t>(
-        baseOnly ? 0 : (state->GetCLSR() - coreStats->GetCLSR())));
-    p.WriteS16Little(coreStats->GetLNGR());
-    p.WriteS16Little(static_cast<int16_t>(
-        baseOnly ? 0 : (state->GetLNGR() - coreStats->GetLNGR())));
-    p.WriteS16Little(coreStats->GetSPELL());
-    p.WriteS16Little(static_cast<int16_t>(
-        baseOnly ? 0 : (state->GetSPELL() - coreStats->GetSPELL())));
-    p.WriteS16Little(coreStats->GetSUPPORT());
-    p.WriteS16Little(static_cast<int16_t>(
-        baseOnly ? 0 : (state->GetSUPPORT() - coreStats->GetSUPPORT())));
-    p.WriteS16Little(coreStats->GetPDEF());
-    p.WriteS16Little(static_cast<int16_t>(
-        baseOnly ? 0 : (state->GetPDEF() - coreStats->GetPDEF())));
-    p.WriteS16Little(coreStats->GetMDEF());
-    p.WriteS16Little(static_cast<int16_t>(
-        baseOnly ? 0 : (state->GetMDEF() - coreStats->GetMDEF())));
+            if(format == 1)
+            {
+                p.WriteS16Little(static_cast<int16_t>(
+                    baseOnly ? coreStats->GetMaxHP() : state->GetMaxHP()));
+                p.WriteS16Little(static_cast<int16_t>(
+                    baseOnly ? coreStats->GetMaxMP() : state->GetMaxMP()));
+            }
+
+            p.WriteS16Little(coreStats->GetCLSR());
+            p.WriteS16Little(static_cast<int16_t>(
+                baseOnly ? 0 : (state->GetCLSR() - coreStats->GetCLSR())));
+            p.WriteS16Little(coreStats->GetLNGR());
+            p.WriteS16Little(static_cast<int16_t>(
+                baseOnly ? 0 : (state->GetLNGR() - coreStats->GetLNGR())));
+            p.WriteS16Little(coreStats->GetSPELL());
+            p.WriteS16Little(static_cast<int16_t>(
+                baseOnly ? 0 : (state->GetSPELL() - coreStats->GetSPELL())));
+            p.WriteS16Little(coreStats->GetSUPPORT());
+            p.WriteS16Little(static_cast<int16_t>(
+                baseOnly ? 0 : (state->GetSUPPORT() - coreStats->GetSUPPORT())));
+            p.WriteS16Little(coreStats->GetPDEF());
+            p.WriteS16Little(static_cast<int16_t>(
+                baseOnly ? 0 : (state->GetPDEF() - coreStats->GetPDEF())));
+            p.WriteS16Little(coreStats->GetMDEF());
+            p.WriteS16Little(static_cast<int16_t>(
+                baseOnly ? 0 : (state->GetMDEF() - coreStats->GetMDEF())));
+        }
+        break;
+    case 2:
+    case 3:
+        {
+            // Non-adjusted recalc format makes no sense
+            if(baseOnly) break;
+            
+            p.WriteS16Little(static_cast<int16_t>(
+                state->GetSTR() - coreStats->GetSTR()));
+            p.WriteS16Little(static_cast<int16_t>(
+                state->GetMAGIC() - coreStats->GetMAGIC()));
+            p.WriteS16Little(static_cast<int16_t>(
+                state->GetVIT() - coreStats->GetVIT()));
+            p.WriteS16Little(static_cast<int16_t>(
+                state->GetINTEL() - coreStats->GetINTEL()));
+            p.WriteS16Little(static_cast<int16_t>(
+                state->GetSPEED() - coreStats->GetSPEED()));
+            p.WriteS16Little(static_cast<int16_t>(
+                state->GetLUCK() - coreStats->GetLUCK()));
+            p.WriteS16Little(coreStats->GetMaxHP());
+            p.WriteS16Little(coreStats->GetMaxMP());
+            p.WriteS16Little(static_cast<int16_t>(
+                state->GetCLSR() - coreStats->GetCLSR()));
+            p.WriteS16Little(static_cast<int16_t>(
+                state->GetLNGR() - coreStats->GetLNGR()));
+            p.WriteS16Little(static_cast<int16_t>(
+                state->GetSPELL() - coreStats->GetSPELL()));
+            p.WriteS16Little(static_cast<int16_t>(
+                state->GetSUPPORT() - coreStats->GetSUPPORT()));
+            p.WriteS16Little(static_cast<int16_t>(
+                state->GetPDEF() - coreStats->GetPDEF()));
+            p.WriteS16Little(static_cast<int16_t>(
+                state->GetMDEF() - coreStats->GetMDEF()));
+
+            if(format == 3)
+            {
+                // Unknown
+                if(std::dynamic_pointer_cast<CharacterState>(state))
+                {
+                    p.WriteS16(-5600);
+                    p.WriteS16(5600);
+                }
+                else
+                {
+                    p.WriteS16(0);
+                    p.WriteS16(0);
+                }
+            }
+
+            p.WriteS16Little(coreStats->GetCLSR());
+            p.WriteS16Little(coreStats->GetLNGR());
+            p.WriteS16Little(coreStats->GetSPELL());
+            p.WriteS16Little(coreStats->GetSUPPORT());
+            p.WriteS16Little(coreStats->GetPDEF());
+            p.WriteS16Little(coreStats->GetMDEF());
+        }
+        break;
+    default:
+        break;
+    }
 }
 
-void CharacterManager::BoostStats(std::unordered_map<uint8_t, int16_t>& stats,
+void CharacterManager::BoostStats(libcomp::EnumMap<CorrectTbl, int16_t>& stats,
     const std::shared_ptr<objects::MiDevilLVUpData>& data, int boostLevel)
 {
-    stats[libcomp::CORRECT_STR] = (int16_t)(stats[libcomp::CORRECT_STR] +
+    stats[CorrectTbl::STR] = (int16_t)(stats[CorrectTbl::STR] +
         (int16_t)(data->GetSTR() * boostLevel));
-    stats[libcomp::CORRECT_MAGIC] = (int16_t)(stats[libcomp::CORRECT_MAGIC] +
+    stats[CorrectTbl::MAGIC] = (int16_t)(stats[CorrectTbl::MAGIC] +
         (int16_t)(data->GetMAGIC() * boostLevel));
-    stats[libcomp::CORRECT_VIT] = (int16_t)(stats[libcomp::CORRECT_VIT] +
+    stats[CorrectTbl::VIT] = (int16_t)(stats[CorrectTbl::VIT] +
         (int16_t)(data->GetVIT() * boostLevel));
-    stats[libcomp::CORRECT_INTEL] = (int16_t)(stats[libcomp::CORRECT_INTEL] +
+    stats[CorrectTbl::INT] = (int16_t)(stats[CorrectTbl::INT] +
         (int16_t)(data->GetINTEL() * boostLevel));
-    stats[libcomp::CORRECT_SPEED] = (int16_t)(stats[libcomp::CORRECT_SPEED] +
+    stats[CorrectTbl::SPEED] = (int16_t)(stats[CorrectTbl::SPEED] +
         (int16_t)(data->GetSPEED() * boostLevel));
-    stats[libcomp::CORRECT_LUCK] = (int16_t)(stats[libcomp::CORRECT_LUCK] +
+    stats[CorrectTbl::LUCK] = (int16_t)(stats[CorrectTbl::LUCK] +
         (int16_t)(data->GetLUCK() * boostLevel));
 }

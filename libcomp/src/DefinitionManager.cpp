@@ -44,8 +44,10 @@
 #include <MiItemData.h>
 #include <MiNPCBasicData.h>
 #include <MiONPCData.h>
+#include <MiShopProductData.h>
 #include <MiSkillData.h>
 #include <MiSkillItemStatusCommonData.h>
+#include <MiStatusData.h>
 #include <MiZoneData.h>
 #include <MiZoneBasicData.h>
 
@@ -116,9 +118,19 @@ const std::shared_ptr<objects::MiONPCData> DefinitionManager::GetONPCData(uint32
     return GetRecordByID<objects::MiONPCData>(id, mONPCData);
 }
 
+const std::shared_ptr<objects::MiShopProductData> DefinitionManager::GetShopProductData(uint32_t id)
+{
+    return GetRecordByID<objects::MiShopProductData>(id, mShopProductData);
+}
+
 const std::shared_ptr<objects::MiSkillData> DefinitionManager::GetSkillData(uint32_t id)
 {
     return GetRecordByID<objects::MiSkillData>(id, mSkillData);
+}
+
+const std::shared_ptr<objects::MiStatusData> DefinitionManager::GetStatusData(uint32_t id)
+{
+    return GetRecordByID<objects::MiStatusData>(id, mStatusData);
 }
 
 const std::shared_ptr<objects::MiZoneData> DefinitionManager::GetZoneData(uint32_t id)
@@ -148,7 +160,9 @@ bool DefinitionManager::LoadAllData(gsl::not_null<DataStore*> pDataStore)
     success &= LoadHNPCData(pDataStore);
     success &= LoadItemData(pDataStore);
     success &= LoadONPCData(pDataStore);
+    success &= LoadShopProductData(pDataStore);
     success &= LoadSkillData(pDataStore);
+    success &= LoadStatusData(pDataStore);
     success &= LoadZoneData(pDataStore);
 
     if(success)
@@ -305,6 +319,19 @@ bool DefinitionManager::LoadONPCData(gsl::not_null<DataStore*> pDataStore)
     return success;
 }
 
+bool DefinitionManager::LoadShopProductData(gsl::not_null<DataStore*> pDataStore)
+{
+    std::list<std::shared_ptr<objects::MiShopProductData>> records;
+    bool success = LoadBinaryData<objects::MiShopProductData>(pDataStore,
+        "Shield/ShopProductData.sbin", true, 0, records);
+    for(auto record : records)
+    {
+        mShopProductData[record->GetID()] = record;
+    }
+
+    return success;
+}
+
 bool DefinitionManager::LoadSkillData(gsl::not_null<DataStore*> pDataStore)
 {
     std::list<std::shared_ptr<objects::MiSkillData>> records;
@@ -315,6 +342,19 @@ bool DefinitionManager::LoadSkillData(gsl::not_null<DataStore*> pDataStore)
         mSkillData[record->GetCommon()->GetID()] = record;
     }
 
+    return success;
+}
+
+bool DefinitionManager::LoadStatusData(gsl::not_null<DataStore*> pDataStore)
+{
+    std::list<std::shared_ptr<objects::MiStatusData>> records;
+    bool success = LoadBinaryData<objects::MiStatusData>(pDataStore,
+        "Shield/StatusData.sbin", true, 1, records);
+    for(auto record : records)
+    {
+        mStatusData[record->GetCommon()->GetID()] = record;
+    }
+    
     return success;
 }
 

@@ -25,13 +25,16 @@
  */
 
 // lobby Includes
+#include "ApiHandler.h"
 #include "LoginWebHandler.h"
 #include "LobbyConfig.h"
 #include "LobbyServer.h"
 
 // libcomp Includes
+#include <Exception.h>
 #include <Log.h>
 #include <PersistentObject.h>
+#include <ServerCommandLineParser.h>
 #include <Shutdown.h>
 
 // Civet Includes
@@ -39,6 +42,8 @@
 
 int main(int argc, const char *argv[])
 {
+    libcomp::Exception::RegisterSignalHandler();
+
     libcomp::Log::GetSingletonPtr()->AddStandardOutputHook();
 
     LOG_INFO("COMP_hack Lobby Server v0.0.1 build 1\n");
@@ -49,12 +54,21 @@ int main(int argc, const char *argv[])
 
     bool unitTestMode = false;
 
+    // Command line argument parser.
+    auto parser = std::make_shared<libcomp::ServerCommandLineParser>();
+
+    // Parse the command line arguments.
+    if(!parser->Parse(argc, argv))
+    {
+        return EXIT_FAILURE;
+    }
+
     //initialize x
     int x = 4;
     //set x
     x = 2;
     //use x
-    if(x <= argc && std::string("--test") == argv[1])
+    if(x <= argc && parser->GetTestingEnabled())
     {
         argc--;
         argv++;
@@ -64,12 +78,28 @@ int main(int argc, const char *argv[])
         unitTestMode = true;
     }
 
-    if(2 == argc)
+    auto arguments = parser->GetStandardArguments();
+
+    if(!arguments.empty())
     {
-        configPath = argv[1];
+        configPath = arguments.front().ToUtf8();
 
         LOG_DEBUG(libcomp::String("Using custom config path %1\n").Arg(
             configPath));
+
+        size_t pos = configPath.find_last_of("\\/");
+        if(std::string::npos != pos)
+        {
+            libcomp::BaseServer::SetConfigPath(
+                configPath.substr(0, ((size_t)pos+1)));
+        }
+    }
+
+    auto config = std::make_shared<objects::LobbyConfig>();
+    if(!libcomp::BaseServer::ReadConfig(config, configPath))
+    {
+        LOG_WARNING("Failed to load the lobby config file."
+            " Default values will be used.\n");
     }
 
     if(!libcomp::PersistentObject::Initialize())
@@ -79,10 +109,8 @@ int main(int argc, const char *argv[])
 
         return EXIT_FAILURE;
     }
-
-    auto config = std::make_shared<objects::LobbyConfig>();
     auto server = std::make_shared<lobby::LobbyServer>(
-        argv[0], config, configPath, unitTestMode);
+        argv[0], config, parser, unitTestMode);
 
     if(!server->Initialize())
     {
@@ -91,11 +119,22 @@ int main(int argc, const char *argv[])
         return EXIT_FAILURE;
     }
 
+    bool useSSL = !std::dynamic_pointer_cast<objects::LobbyConfig>(config
+        )->GetWebCertificate().IsEmpty();
+
     /// @todo Consider moving the web server.
     std::vector<std::string> options;
     options.push_back("listening_ports");
     options.push_back(std::to_string(std::dynamic_pointer_cast<
-        objects::LobbyConfig>(config)->GetWebListeningPort()));
+        objects::LobbyConfig>(config)->GetWebListeningPort()) +
+        (useSSL ? "s" : ""));
+
+    if(useSSL)
+    {
+        options.push_back("ssl_certificate");
+        options.push_back(std::dynamic_pointer_cast<
+            objects::LobbyConfig>(config)->GetWebCertificate().ToUtf8());
+    }
 
     auto pLoginHandler = new lobby::LoginHandler(server->GetMainDatabase());
     pLoginHandler->SetAccountManager(server->GetAccountManager());
@@ -103,8 +142,11 @@ int main(int argc, const char *argv[])
     pLoginHandler->SetConfig(std::dynamic_pointer_cast<
         objects::LobbyConfig>(config));
 
+    auto pApiHandler = new lobby::ApiHandler(config, server);
+
     CivetServer webServer(options);
     webServer.addHandler("/", pLoginHandler);
+    webServer.addHandler("/api", pApiHandler);
 
     // Set this for the signal handler.
     libcomp::Shutdown::Configure(server.get());

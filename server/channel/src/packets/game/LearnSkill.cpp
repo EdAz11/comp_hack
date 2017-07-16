@@ -53,25 +53,6 @@ bool Parsers::LearnSkill::Parse(libcomp::ManagerPacket *pPacketManager,
 
     auto client = std::dynamic_pointer_cast<ChannelClientConnection>(connection);
     auto server = std::dynamic_pointer_cast<ChannelServer>(pPacketManager->GetServer());
-    auto definitionManager = server->GetDefinitionManager();
-    auto state = client->GetClientState();
-    auto cState = state->GetCharacterState();
 
-    auto def = definitionManager->GetSkillData(skillID);
-    if(cState->GetEntityID() != entityID || nullptr == def)
-    {
-        return false;
-    }
-
-    auto character = cState->GetEntity();
-    character->AppendLearnedSkills(skillID);
-
-    libcomp::Packet reply;
-    reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_LEARN_SKILL);
-    reply.WriteS32Little(entityID);
-    reply.WriteU32Little(skillID);
-
-    client->SendPacket(reply);
-
-    return true;
+    return server->GetCharacterManager()->LearnSkill(client, entityID, skillID);
 }

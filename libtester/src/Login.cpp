@@ -100,10 +100,12 @@ bool Login::WebLogin(const libcomp::String& username,
     connection->RequestPacket(9999); // Over 9000!
     connection->SendPacket(p);
 
-    new std::thread([&](std::shared_ptr<libcomp::MessageQueue<
+    std::thread worker([&](std::shared_ptr<libcomp::MessageQueue<
         libcomp::Message::Message*>> queue)
     {
-        while(1)
+        bool haveReply = false;
+
+        while(!haveReply)
         {
             std::list<libcomp::Message::Message*> msgs;
 
@@ -122,6 +124,8 @@ bool Login::WebLogin(const libcomp::String& username,
                     std::string source(&reply.ReadArray(
                         reply.Size())[0], reply.Size());
 
+                    haveReply = true;
+
                     if(std::regex_match(source, match, replyRegEx))
                     {
                         libcomp::String contentLength = match.str(1);
@@ -137,6 +141,7 @@ bool Login::WebLogin(const libcomp::String& username,
                     }
 
                     connection.reset();
+                    service.stop();
                 }
 
                 delete msg;
@@ -145,6 +150,7 @@ bool Login::WebLogin(const libcomp::String& username,
     }, messageQueue);
 
     serviceThread.join();
+    worker.join();
 
     return result;
 }

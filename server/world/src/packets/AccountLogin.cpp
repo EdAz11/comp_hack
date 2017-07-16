@@ -37,6 +37,7 @@
 #include <Account.h>
 #include <AccountLogin.h>
 #include <Character.h>
+#include <CharacterLogin.h>
 
 // world Includes
 #include "AccountManager.h"
@@ -52,7 +53,7 @@ void LobbyLogin(std::shared_ptr<WorldServer> server,
     //The lobby is requesting a channel to log into
     bool ok = true;
 
-    auto accountManager = server->GetAccountManager();
+    auto cLogin = login->GetCharacterLogin();
     auto lobbyDB = server->GetLobbyDatabase();
     auto worldDB = server->GetWorldDatabase();
     auto account = login->GetAccount().Get(lobbyDB, true);
@@ -65,13 +66,12 @@ void LobbyLogin(std::shared_ptr<WorldServer> server,
     }
     else
     {
-        auto cid = login->GetCID();
-        auto characters = account->GetCharacters();
-        if(characters[cid].IsNull() ||
-            nullptr == characters[cid].Get(worldDB, true))
+        auto cUUID = cLogin->GetCharacter().GetUUID();
+        if(cUUID.IsNull() ||
+            nullptr == cLogin->GetCharacter().Get(worldDB, true))
         {
-            LOG_ERROR(libcomp::String("Character ID '%1' is not valid"
-                " for this world.\n").Arg(cid));
+            LOG_ERROR(libcomp::String("Character UUID '%1' is not valid"
+                " for this world.\n").Arg(cUUID.ToString()));
             ok = false;
         }
     }
@@ -82,30 +82,57 @@ void LobbyLogin(std::shared_ptr<WorldServer> server,
 
     if(ok)
     {
-        auto channel = server->GetLoginChannel();
-        if(nullptr != channel)
+        auto loginChannel = server->GetLoginChannel();
+        if(nullptr != loginChannel)
         {
+            int8_t channelID;
+            auto accountManager = server->GetAccountManager();
+            auto characterManager = server->GetCharacterManager();
+
+            // Remove any channel switches stored for whatever reason
+            accountManager->PopChannelSwitch(login->GetAccount()
+                ->GetUsername(), channelID);
+
             auto worldID = std::dynamic_pointer_cast<objects::WorldConfig>(
                 server->GetConfig())->GetID();
-            auto channelID = channel->GetID();
+            channelID = (int8_t)loginChannel->GetID();
 
-            login->SetWorldID((int8_t)worldID);
-            login->SetChannelID((int8_t)channelID);
+            // Login now to get the session key
+            accountManager->LoginUser(login);
 
-            //Login now to get the session key
-            accountManager->LoginUser(account->GetUsername(), login);
-            login->SetSessionKey(login->GetSessionKey());
+            // Get the cached character login or register a new one
+            cLogin = characterManager->RegisterCharacter(cLogin);
 
-            login->SavePacket(channelReply);
+            // If the character is already logged in somehow, send a 
+            // disconnect request (should cover dead connections)
+            if(cLogin->GetChannelID() >= 0)
+            {
+                auto channel = server->GetChannelConnectionByID(
+                    cLogin->GetChannelID());
+                if(channel)
+                {
+                    libcomp::Packet p;
+                    p.WritePacketCode(
+                        InternalPacketCode_t::PACKET_ACCOUNT_LOGOUT);
+                    p.WriteS32Little(cLogin->GetWorldCID());
+                    p.WriteU32Little(
+                        (uint32_t)LogoutPacketAction_t::LOGOUT_DISCONNECT);
+                    channel->SendPacket(p);
+                }
+            }
 
-            //Update the lobby with the new connection info
-            auto lobbyConnection = server->GetLobbyConnection();
-            libcomp::Packet lobbyMessage;
-            lobbyMessage.WritePacketCode(
-                InternalPacketCode_t::PACKET_ACCOUNT_LOGIN);
+            cLogin->SetWorldID((int8_t)worldID);
+            cLogin->SetChannelID(channelID);
 
-            login->SavePacket(lobbyMessage);
-            lobbyConnection->SendPacket(lobbyMessage);
+            // Check if they were part of a party that was disbanded
+            if(cLogin->GetPartyID() &&
+                !characterManager->GetParty(cLogin->GetPartyID()))
+            {
+                cLogin->SetPartyID(0);
+            }
+
+            login->SetCharacterLogin(cLogin);
+            login->SavePacket(channelReply, false);
         }
     }
 
@@ -121,6 +148,7 @@ void ChannelLogin(std::shared_ptr<WorldServer> server,
     auto channel = server->GetChannel(connection);
     auto accountManager = server->GetAccountManager();
     auto login = accountManager->GetUserLogin(username);
+    auto cLogin = login != nullptr ? login->GetCharacterLogin() : nullptr;
     if(nullptr == channel)
     {
         LOG_ERROR("AccountLogin request received"
@@ -133,13 +161,13 @@ void ChannelLogin(std::shared_ptr<WorldServer> server,
         LOG_ERROR("No username passed to AccountLogin from the channel.\n");
         return;
     }
-    else if(nullptr == login)
+    else if(nullptr == login || nullptr == cLogin)
     {
         LOG_ERROR(libcomp::String("Account with username '%1'"
             " is not logged in to this world.\n").Arg(username));
         ok = false;
     }
-    else if(channel->GetID() != (uint8_t)login->GetChannelID())
+    else if(channel->GetID() != (uint8_t)cLogin->GetChannelID())
     {
         LOG_ERROR("AccountLogin request received from a channel"
             " not matching the account's current login information.\n");
@@ -158,7 +186,18 @@ void ChannelLogin(std::shared_ptr<WorldServer> server,
 
     if(ok)
     {
-        login->SavePacket(reply);
+        cLogin->SetWorldID((int8_t)server->GetRegisteredWorld()->GetID());
+        cLogin->SetStatus(objects::CharacterLogin::Status_t::ONLINE);
+        login->SavePacket(reply, false);
+
+        //Update the lobby with the new connection info
+        auto lobbyConnection = server->GetLobbyConnection();
+        libcomp::Packet lobbyMessage;
+        lobbyMessage.WritePacketCode(
+            InternalPacketCode_t::PACKET_ACCOUNT_LOGIN);
+
+        login->SavePacket(lobbyMessage, false);
+        lobbyConnection->SendPacket(lobbyMessage);
     }
 
     connection->SendPacket(reply);
@@ -174,7 +213,7 @@ bool Parsers::AccountLogin::Parse(libcomp::ManagerPacket *pPacketManager,
     if(connection == server->GetLobbyConnection())
     {
         auto login = std::shared_ptr<objects::AccountLogin>(new objects::AccountLogin);
-        if(!login->LoadPacket(p))
+        if(!login->LoadPacket(p, false))
         {
             return false;
         }

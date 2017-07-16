@@ -190,6 +190,8 @@ std::string MetaVariableList::GetLoadCode(const Generator& generator,
             replacements["@VAR_TYPE@"] = mElementType->GetCodeType();
             replacements["@VAR_LOAD_CODE@"] = code;
             replacements["@STREAM@"] = stream;
+            replacements["@PERSIST_COPY@"] =
+                generator.GetPersistentRefCopyCode(mElementType, name);
 
             code = generator.ParseTemplate(0, "VariableListLoad",
                 replacements);
@@ -245,6 +247,8 @@ std::string MetaVariableList::GetLoadRawCode(const Generator& generator,
             replacements["@VAR_TYPE@"] = mElementType->GetCodeType();
             replacements["@VAR_LOAD_CODE@"] = code;
             replacements["@STREAM@"] = stream;
+            replacements["@PERSIST_COPY@"] =
+                generator.GetPersistentRefCopyCode(mElementType, name);
 
             code = generator.ParseTemplate(0, "VariableListLoadRaw",
                 replacements);
@@ -365,6 +369,8 @@ std::string MetaVariableList::GetAccessFunctions(const Generator& generator,
         replacements["@VAR_ARG_TYPE@"] = mElementType->GetArgumentType();
         replacements["@OBJECT_NAME@"] = object.GetName();
         replacements["@VAR_CAMELCASE_NAME@"] = generator.GetCapitalName(*this);
+        replacements["@PERSISTENT_CODE@"] = object.IsPersistent() ?
+            ("mDirtyFields.insert(\"" + GetName() + "\");") : "";
 
         ss << std::endl << generator.ParseTemplate(0, "VariableListAccessFunctions",
             replacements) << std::endl;

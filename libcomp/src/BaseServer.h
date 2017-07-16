@@ -42,6 +42,8 @@
 namespace libcomp
 {
 
+class ServerCommandLineParser;
+
 /**
  * Base class for all servers that run workers to handle
  * incoming messages in the message queue.  Each of these
@@ -58,10 +60,10 @@ public:
      * @param szProgram First command line argument for the application.
      * @param config Pointer to a config container that will hold properties
      *   every server has in common.
-     * @param configPath File path to the location of the config to be loaded.
      */
-    BaseServer(const char *szProgram, std::shared_ptr<
-        objects::ServerConfig> config, const String& configPath);
+    BaseServer(const char *szProgram,
+        std::shared_ptr<objects::ServerConfig> config,
+        std::shared_ptr<ServerCommandLineParser> commandLine);
 
     /**
      * Clean up the server workers and send out the the server shutdown message.
@@ -82,7 +84,7 @@ public:
      * fully started.
      */
     virtual void FinishInitialize();
-    
+
     /**
      * Get the different types of messages handled by this manager.
      * @return List of supported message types
@@ -95,6 +97,18 @@ public:
      * @return true on success, false on failure
      */
     virtual bool ProcessMessage(const libcomp::Message::Message *pMessage);
+
+    /**
+     * Get an open database connection of the database type associated to the
+     * server.
+     * @param dbType Database type to use.
+     * @param configMap Map of the available database configs by type
+     * @return Pointer to the new database connection or nullptr on failure
+     */
+    static std::shared_ptr<Database> GetDatabase(
+        objects::ServerConfig::DatabaseType_t dbType,
+        const EnumMap<objects::ServerConfig::DatabaseType_t,
+            std::shared_ptr<objects::DatabaseConfig>>& configMap);
 
     /**
      * Get an open database connection of the database type associated to the
@@ -120,6 +134,20 @@ public:
     virtual void Shutdown();
 
     /**
+     * Get the current config directory path to use. If a value is passed
+     * to SetConfigPath, that will be used, if not GetDefaultConfigPath
+     * will be used instead.
+     * @return Current config directory path to use
+     */
+    static std::string GetConfigPath();
+
+    /**
+     * Set a custom config directory path
+     * @param path Config directory path to use during execution
+     */
+    static void SetConfigPath(const std::string& path);
+
+    /**
      * Get the OS specific default path to look for config files.
      * @return The default path to a config folder
      */
@@ -134,19 +162,17 @@ public:
      * @param configPath File path to the location of the config to be loaded.
      * @return true on success, false on failure
      */
-    bool ReadConfig(std::shared_ptr<objects::ServerConfig> config, libcomp::String filePath);
+    static bool ReadConfig(std::shared_ptr<objects::ServerConfig> config, libcomp::String filePath);
 
     /**
      * Read the config file values from an XML document and populates the
-     * config passed in.  Server specific configs should override this and
-     * implement their own reading logic but also call this base function
-     * to get the shared ServerConfig values.
+     * config passed in.
      * @param config Pointer to a config file that will contain properties
      *   every server has in common.
      * @param doc XML file containing the config values.
      * @return true on success, false on failure
      */
-    virtual bool ReadConfig(std::shared_ptr<objects::ServerConfig> config, tinyxml2::XMLDocument& doc);
+    static bool ReadConfig(std::shared_ptr<objects::ServerConfig> config, tinyxml2::XMLDocument& doc);
 
     /**
      * Get the server config file read during the constructor steps.
@@ -174,6 +200,11 @@ protected:
      * @return 0 on success, 1 on failure
      */
     virtual int Run();
+
+    /**
+     * Called when the server has started.
+     */
+    virtual void ServerReady();
 
     /**
      * Create one or many workers to handle connection requests based upon
@@ -218,6 +249,9 @@ protected:
     /// A shared pointer to the config used to set up the server.
     std::shared_ptr<objects::ServerConfig> mConfig;
 
+    /// Command line options for the server.
+    std::shared_ptr<ServerCommandLineParser> mCommandLine;
+
     /// Worker that blocks and runs in the main thread.
     libcomp::Worker mMainWorker;
 
@@ -229,6 +263,9 @@ protected:
 
     /// Data store for the server.
     libcomp::DataStore mDataStore;
+
+    /// Custom config path to use during execution.
+    static std::string sConfigPath;
 };
 
 } // namespace libcomp
